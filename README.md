@@ -17,6 +17,7 @@ Geschrieben in PowerShell (WinForms), ohne Installation lauffähig.
 - **Fortschrittsbalken** und **Protokoll** (Liste im Fenster und `sync.log`)
 - **Zeitpläne** direkt im Tool: legt Einträge im Windows-Aufgabenplaner an, ändert und entfernt sie
 - Windows-**Benachrichtigung** nach automatischen Läufen
+- **Update-Hinweis**: DirToy sucht beim Start bei GitHub nach einem neueren Release (abschaltbar). Der Button "Update verfügbar" bietet "Jetzt aktualisieren" (lädt, prüft und ersetzt `DirToy.ps1`, die alte Datei bleibt als Sicherung) oder die Release-Seite im Browser
 - **Hell- und Dunkel-Design**: automatisch wie Windows oder fest einstellbar (Button "Design")
 
 ## Voraussetzungen

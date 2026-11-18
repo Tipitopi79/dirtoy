@@ -2,7 +2,7 @@
 # DirToy - grafisches Ordner-Synchronisationstool (Vorbild: SyncToy)
 # Start: DirToy.bat (Doppelklick)
 
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBasic
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBasic, System.Net.Http
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $ErrorActionPreference = 'Stop'
 
@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.4.2'
+$script:version = '1.5.0'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -529,6 +529,63 @@ if ($Task -or $All) {
     if ($msgs.Count -gt 0) { Send-Notify $(if ($bad) { 'DirToy - Fehler' } else { 'DirToy - fertig' }) ($msgs -join "`n") ([bool]$bad) }
     exit $(if ($bad) { 1 } else { 0 })
 }
+# ---------------------------------------------------------------- Einstellungen + Update-Pruefung (GitHub)
+$script:settingsFile = Join-Path $script:dataDir 'einstellungen.json'
+$script:repo = 'Tipitopi79/dirtoy'
+function Get-Setting([string]$name, $default) {
+    try {
+        if (Test-Path $script:settingsFile) {
+            $s = Get-Content $script:settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($s.PSObject.Properties[$name] -and $null -ne $s.$name) { return $s.$name }
+        }
+    } catch { }
+    return $default
+}
+function Set-Setting([string]$name, $value) {
+    try {
+        $h = [ordered]@{}
+        if (Test-Path $script:settingsFile) {
+            $s = Get-Content $script:settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            foreach ($p in $s.PSObject.Properties) { $h[$p.Name] = $p.Value }
+        }
+        $h[$name] = $value
+        Set-Content -Path $script:settingsFile -Value (ConvertTo-Json -InputObject $h) -Encoding UTF8
+    } catch { }
+}
+# Antwort von GET /releases/latest -> @{ Version; Tag; Url; Notes } oder $null (kein gueltiger Release)
+function Read-Release([string]$json) {
+    try {
+        $j = ConvertFrom-Json $json
+        $tag = [string]$j.tag_name
+        if ($tag -notmatch '^v?(\d+\.\d+\.\d+)$') { return $null }
+        $url = [string]$j.html_url
+        if ($url -notlike "https://github.com/$($script:repo)/*") { $url = "https://github.com/$($script:repo)/releases/tag/$tag" }
+        return [pscustomobject]@{ Version = [version]$Matches[1]; Tag = $tag; Url = $url; Notes = [string]$j.body }
+    } catch { return $null }
+}
+function Test-NewerVersion($info) { return ($null -ne $info -and $info.Version -gt [version]$script:version) }
+# Laedt DirToy.ps1 des Release-Tags, prueft sie und ersetzt die laufende Datei (Sicherung bleibt als .bak-<alte Version>)
+function Install-Update($info, [string]$target, [string]$sourceUrl) {
+    if ($info.Tag -notmatch '^v?\d+\.\d+\.\d+$') { throw 'Ungültiger Versions-Tag.' }
+    if (-not $sourceUrl) { $sourceUrl = "https://raw.githubusercontent.com/$($script:repo)/$($info.Tag)/DirToy.ps1" }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $wc = New-Object System.Net.WebClient
+    $wc.Headers['User-Agent'] = 'DirToy'
+    try { $bytes = $wc.DownloadData($sourceUrl) } finally { $wc.Dispose() }
+    $neu = $target + '.neu'
+    [System.IO.File]::WriteAllBytes($neu, $bytes)
+    try {
+        if ($bytes.Length -lt 50KB) { throw 'Die heruntergeladene Datei ist zu klein.' }
+        $errs = $null; $toks = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($neu, [ref]$toks, [ref]$errs)
+        if ($errs -and $errs.Count -gt 0) { throw 'Die heruntergeladene Datei ist kein gültiges Skript.' }
+        $txt = [System.Text.Encoding]::UTF8.GetString($bytes)
+        if ($txt -notmatch "\`$script:version\s*=\s*'$([regex]::Escape([string]$info.Version))'") { throw "Die Datei enthält nicht die Version $($info.Version)." }
+        $bak = $target + '.bak-' + $script:version
+        Copy-Item $target $bak -Force
+        Move-Item $neu $target -Force
+    } finally { if (Test-Path $neu) { Remove-Item $neu -Force -ErrorAction SilentlyContinue } }
+}
 if ($NoGui) { return }
 
 # ================================================================ GUI
@@ -536,14 +593,11 @@ Load-Tasks
 
 # ---- Theme (folgt dem Windows-Hell/Dunkel-Modus)
 function C([string]$hex) { [System.Drawing.ColorTranslator]::FromHtml($hex) }
-$script:settingsFile = Join-Path $script:dataDir 'einstellungen.json'
 function Get-ThemeSetting {
-    try { if (Test-Path $script:settingsFile) { $s = Get-Content $script:settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json; if ($s.Theme -in @('auto', 'hell', 'dunkel')) { return [string]$s.Theme } } } catch { }
-    return 'auto'
+    $v = [string](Get-Setting 'Theme' 'auto')
+    if ($v -in @('auto', 'hell', 'dunkel')) { return $v } else { return 'auto' }
 }
-function Set-ThemeSetting([string]$v) {
-    try { Set-Content -Path $script:settingsFile -Value (ConvertTo-Json -InputObject @{ Theme = $v }) -Encoding UTF8 } catch { }
-}
+function Set-ThemeSetting([string]$v) { Set-Setting 'Theme' $v }
 $script:themeSetting = Get-ThemeSetting
 $isDark = $false
 if ($script:themeSetting -eq 'dunkel') { $isDark = $true }
@@ -622,7 +676,10 @@ $form.Controls.Add($side)
 $lt = New-Object System.Windows.Forms.Label; $lt.Text = 'DirToy'; $lt.Font = $fTitle; $lt.ForeColor = $th.Accent; $lt.AutoSize = $true
 [void](Add-To $side $lt 18 16 0 0)
 [void](New-Label $side 20 62 230 'Ordner synchron halten' $true)
-[void](New-Label $side 20 80 230 "Version $($script:version)" $true)
+$lblVer = New-Label $side 20 80 230 "Version $($script:version)  ·  Updates prüfen" $true
+$lblVer.Cursor = 'Hand'; $lblVer.ForeColor = $th.Accent
+$script:updTimer = New-Object System.Windows.Forms.Timer; $script:updTimer.Interval = 300
+$script:updTimer.Add_Tick({ if ($script:updTask -and $script:updTask.IsCompleted) { Finish-UpdateCheck } })
 [void](New-Label $side 20 110 230 'AUFGABEN' $true)
 $lb = New-Object System.Windows.Forms.ListBox
 $lb.BorderStyle = 'None'; $lb.BackColor = $th.Surface; $lb.ForeColor = $th.Text; $lb.DrawMode = 'OwnerDrawFixed'; $lb.ItemHeight = 38
@@ -631,6 +688,7 @@ $btnNew = New-Btn $side 16 664 112 38 '+ Neu' $false $th.Surface
 $btnDel = New-Btn $side 140 664 112 38 'Löschen' $false $th.Surface
 $btnNew.Anchor = $A_BL; $btnDel.Anchor = $A_BL
 $btnHelp = New-Btn $side 16 618 236 36 'Hilfe' $false $th.Surface; $btnHelp.Anchor = $A_BL
+$btnUpd = New-Btn $side 16 530 236 36 'Update verfügbar' $true $null; $btnUpd.Anchor = $A_BL; $btnUpd.Visible = $false
 $themeNames = @{ auto = 'Design: Automatisch'; hell = 'Design: Hell'; dunkel = 'Design: Dunkel' }
 $btnTheme = New-Btn $side 16 574 236 36 $themeNames[$script:themeSetting] $false $th.Surface; $btnTheme.Anchor = $A_BL
 $lb.Add_DrawItem({
@@ -889,6 +947,8 @@ function Show-Help {
     HelpP 'Die Liste unten zeigt den aktuellen Lauf. Alle echten Läufe, manuell und automatisch, stehen zusätzlich mit Uhrzeit in DirToy-Daten\sync.log. Der Button "Protokoll" öffnet diese Datei.'
     HelpH 'Design'
     HelpP 'Der Button "Design" unten links wechselt zwischen Automatisch (wie Windows), Hell und Dunkel. DirToy startet dabei kurz neu, die Einstellung steht in DirToy-Daten\einstellungen.json.'
+    HelpH 'Updates'
+    HelpP 'Beim Start fragt DirToy im Hintergrund bei GitHub nach einer neueren Version (nur die Versionsnummer wird abgefragt, es werden keine Daten von dir gesendet). Gibt es eine, erscheint links der Button "Update verfügbar". Dort kannst du "Jetzt aktualisieren" wählen (lädt DirToy.ps1 aus dem Release, prüft sie, sichert die alte Datei als DirToy.ps1.bak-<Version> und startet neu) oder die Release-Seite im Browser öffnen. Ein Klick auf "Updates prüfen" unter dem Titel sucht von Hand; dort lässt sich die automatische Suche auch abschalten. Aufgaben im Aufgabenplaner suchen nie nach Updates.'
     HelpH 'Wo liegen meine Daten?'
     HelpP 'Aufgaben und Zeitpläne stehen in DirToy-Daten\aufgaben.json neben dem Programm. Verschiebst du DirToy.ps1, speichere die Zeitpläne danach einmal neu. Bei Startproblemen steht der Grund in DirToy-Daten\fehler.log.'
     $rb.SelectionStart = 0; $rb.ScrollToCaret()
@@ -900,6 +960,111 @@ function Show-Help {
     })
     [void]$d.ShowDialog($form)
     $d.Dispose()
+}
+# ---- Update-Fenster (mode: new = neue Version da, current = aktuell, error = Pruefung fehlgeschlagen)
+function Show-UpdateDialog($info, [string]$mode) {
+    $d = New-Object System.Windows.Forms.Form
+    $d.Text = 'DirToy - Update'; $d.ClientSize = New-Object System.Drawing.Size(560, 420)
+    $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
+    $d.StartPosition = 'CenterParent'; $d.ShowInTaskbar = $false; $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
+    $head = switch ($mode) {
+        'new' { "Neue Version verfügbar: $($info.Version)" }
+        'current' { 'DirToy ist aktuell' }
+        default { 'Update-Prüfung nicht möglich' }
+    }
+    $sub = switch ($mode) {
+        'new' { "Installiert ist Version $($script:version)." }
+        'current' { "Du hast die neueste Version ($($script:version))." }
+        default { 'Es konnte keine Verbindung zu GitHub hergestellt werden (oder es gibt noch keinen Release).' }
+    }
+    $l1 = New-Label $d 24 18 512 $head $false; $l1.Font = $fBold; $l1.ForeColor = $th.Accent
+    $l2 = New-Label $d 24 44 512 $sub $true
+    $btnY = 366
+    if ($mode -eq 'new') {
+        [void](New-Label $d 24 76 512 'Änderungen' $true)
+        $rb = New-Object System.Windows.Forms.RichTextBox
+        $rb.ReadOnly = $true; $rb.BorderStyle = 'None'; $rb.BackColor = $th.Input; $rb.ForeColor = $th.Text; $rb.Font = $fSmall; $rb.DetectUrls = $false
+        $rb.Location = New-Object System.Drawing.Point(24, 100); $rb.Size = New-Object System.Drawing.Size(512, 190)
+        $notes = [string]$info.Notes; if ($notes.Length -gt 3000) { $notes = $notes.Substring(0, 3000) + ' ...' }
+        $rb.Text = $(if ($notes.Trim()) { $notes } else { '(keine Beschreibung)' })
+        $d.Controls.Add($rb)
+    }
+    $cb = New-Object System.Windows.Forms.CheckBox
+    $cb.Text = 'Beim Start automatisch nach Updates suchen'; $cb.AutoSize = $true; $cb.BackColor = [System.Drawing.Color]::Transparent
+    $cb.Checked = [bool](Get-Setting 'UpdateCheck' $true)
+    $cb.Location = New-Object System.Drawing.Point(24, 308); $d.Controls.Add($cb)
+    $script:updAction = ''
+    $script:updForm = $d
+    if ($mode -eq 'new') {
+        $bu = New-Btn $d 24 $btnY 170 38 'Jetzt aktualisieren' $true $null
+        $bw = New-Btn $d 204 $btnY 170 38 'Release-Seite' $false $th.Surface
+        $bl = New-Btn $d 384 $btnY 152 38 'Später' $false $th.Surface
+        $bu.Add_Click({ $script:updAction = 'install'; $script:updForm.Close() })
+        $bw.Add_Click({ $script:updAction = 'web'; $script:updForm.Close() })
+        $bl.Add_Click({ $script:updForm.Close() })
+        $d.CancelButton = $bl
+    } else {
+        $bl = New-Btn $d 384 $btnY 152 38 'Schließen' $true $null
+        $bl.Add_Click({ $script:updForm.Close() })
+        $d.CancelButton = $bl
+    }
+    $d.Add_HandleCreated({
+        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($script:updForm.Handle, 20, [ref]$v, 4) } catch { }
+    })
+    [void]$d.ShowDialog($form)
+    Set-Setting 'UpdateCheck' $cb.Checked
+    $d.Dispose()
+    return $script:updAction
+}
+function Do-UpdateAction($info, [string]$action) {
+    if ($action -eq 'web') { Start-Process $info.Url; return }
+    if ($action -ne 'install') { return }
+    if ($script:busy) { [void][System.Windows.Forms.MessageBox]::Show('Bitte erst den laufenden Vorgang beenden oder abbrechen.', 'DirToy', 'OK', 'Information'); return }
+    $q = "DirToy $($info.Version) herunterladen und installieren?`n`nDie aktuelle Datei wird als DirToy.ps1.bak-$($script:version) gesichert. Danach startet DirToy neu."
+    if ([System.Windows.Forms.MessageBox]::Show($q, 'DirToy - Update', 'YesNo', 'Question') -ne 'Yes') { return }
+    try {
+        $form.Cursor = 'WaitCursor'
+        Install-Update $info $script:scriptPath ''
+    } catch {
+        $form.Cursor = 'Default'
+        [void][System.Windows.Forms.MessageBox]::Show("Das Update ist fehlgeschlagen. Die bisherige Version bleibt unverändert.`n`n$($_.Exception.Message)", 'DirToy - Update', 'OK', 'Error')
+        return
+    }
+    $form.Cursor = 'Default'
+    Save-Tasks
+    $vbs = Join-Path $PSScriptRoot 'DirToy.vbs'
+    if (Test-Path $vbs) { Start-Process wscript.exe -ArgumentList "`"$vbs`"" }
+    else { Start-Process powershell.exe -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$($script:scriptPath)`"" }
+    $form.Close()
+}
+# Hintergrund-Pruefung: HttpClient-Task, ein Timer fragt das Ergebnis ab (Fenster bleibt bedienbar)
+$script:updInfo = $null; $script:updTask = $null; $script:updManual = $false
+function Start-UpdateCheck([bool]$manual) {
+    if ($script:updTask -and -not $script:updTask.IsCompleted) { return }
+    $script:updManual = $manual
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $c = New-Object System.Net.Http.HttpClient
+        $c.Timeout = [TimeSpan]::FromSeconds(10)
+        $c.DefaultRequestHeaders.UserAgent.ParseAdd('DirToy')
+        $script:updTask = $c.GetStringAsync("https://api.github.com/repos/$($script:repo)/releases/latest")
+        $script:updTimer.Start()
+    } catch { $script:updTask = $null; if ($manual) { [void](Show-UpdateDialog $null 'error') } }
+}
+function Finish-UpdateCheck {
+    $script:updTimer.Stop()
+    $info = $null
+    if ($script:updTask -and -not $script:updTask.IsFaulted -and -not $script:updTask.IsCanceled) { $info = Read-Release $script:updTask.Result }
+    $script:updTask = $null
+    $script:updInfo = $info
+    $show = Test-NewerVersion $info
+    $btnUpd.Visible = $show
+    $lb.Height = $(if ($show) { 386 } else { 430 })
+    if ($show) { $btnUpd.Text = "Update verfügbar: $($info.Version)" }
+    if ($script:updManual) {
+        $act = if ($show) { Show-UpdateDialog $info 'new' } elseif ($info) { Show-UpdateDialog $info 'current' } else { Show-UpdateDialog $null 'error' }
+        Do-UpdateAction $info $act
+    }
 }
 # ---- Ordnerbaum-Fenster: Ordner abwaehlen, die nicht synchronisiert werden sollen
 function Get-ParentPath([string]$p) {
@@ -1141,6 +1306,8 @@ $btnDel.Add_Click({
 })
 
 $btnHelp.Add_Click({ Show-Help })
+$lblVer.Add_Click({ Start-UpdateCheck $true })
+$btnUpd.Add_Click({ if ($script:updInfo) { Do-UpdateAction $script:updInfo (Show-UpdateDialog $script:updInfo 'new') } })
 $btnTheme.Add_Click({
     if ($script:busy) { return }
     $next = @{ auto = 'hell'; hell = 'dunkel'; dunkel = 'auto' }[$script:themeSetting]
@@ -1193,6 +1360,9 @@ $form.Add_FormClosing({
 })
 
 Refresh-List 0
-$form.Add_Shown({ if ($script:tasks.Count -eq 0) { $btnNew.PerformClick() } })
+$form.Add_Shown({
+    if ([bool](Get-Setting 'UpdateCheck' $true)) { Start-UpdateCheck $false }
+    if ($script:tasks.Count -eq 0) { $btnNew.PerformClick() }
+})
 [void]$form.ShowDialog()
 Save-Tasks
