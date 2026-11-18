@@ -7,8 +7,13 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBas
 $ErrorActionPreference = 'Stop'
 
 $script:errLog = Join-Path $PSScriptRoot 'DirToy-Daten\fehler.log'
+# Logdatei ueber 2 MB -> wird zu <name>.alt (aelteres .alt wird ersetzt)
+function Limit-Log([string]$path) {
+    try { if ((Test-Path $path) -and (Get-Item $path).Length -gt 2MB) { Move-Item $path ($path + '.alt') -Force } } catch { }
+}
 trap {
     try {
+        Limit-Log $script:errLog
         New-Item -ItemType Directory -Force -Path (Split-Path $script:errLog) | Out-Null
         Add-Content -Path $script:errLog -Value ("=== " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "`r`n" + ($_ | Out-String) + ($_.ScriptStackTrace)) -Encoding UTF8
     } catch { }
@@ -17,7 +22,8 @@ trap {
     }
     exit 1
 }
-$script:version = '1.4.0'
+$script:version = '1.4.2'
+$script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
 $script:cancel = $false
@@ -39,7 +45,8 @@ try {
 } catch { }New-Item -ItemType Directory -Force -Path $script:stateDir | Out-Null
 $script:logFile = Join-Path $script:dataDir 'sync.log'
 $script:logOn = $false
-try { if ((Test-Path $script:logFile) -and (Get-Item $script:logFile).Length -gt 2MB) { Move-Item $script:logFile ($script:logFile + '.alt') -Force } } catch { }
+Limit-Log $script:logFile
+Limit-Log $script:errLog
 
 $script:modes = @(
     'Synchronisieren  (A <-> B, neuere Datei gewinnt, Löschungen werden übernommen)',
@@ -85,16 +92,28 @@ function New-Task([string]$name) {
 # ---------------------------------------------------------------- Zustand (zum Erkennen von Löschungen)
 function Get-State([string]$id) {
     $set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    $f = Join-Path $script:stateDir "$id.json"
+    # Neues Format: eine Zeile pro Eintrag (schnell, auch bei hunderttausenden Dateien)
+    $f = Join-Path $script:stateDir "$id.state"
     if (Test-Path $f) {
-        $raw = Get-Content $f -Raw -Encoding UTF8
-        if ($raw -and $raw.Trim()) { $items = ConvertFrom-Json $raw; foreach ($p in $items) { [void]$set.Add([string]$p) } }
+        foreach ($line in [System.IO.File]::ReadLines($f, [System.Text.Encoding]::UTF8)) { if ($line) { [void]$set.Add($line) } }
+    } else {
+        # altes JSON-Format (nur kleine Staende)
+        $fj = Join-Path $script:stateDir "$id.json"
+        if (Test-Path $fj) {
+            try {
+                $raw = Get-Content $fj -Raw -Encoding UTF8
+                if ($raw -and $raw.Trim()) { $items = ConvertFrom-Json $raw; foreach ($p in $items) { [void]$set.Add([string]$p) } }
+            } catch { }
+        }
     }
     return ,$set
 }
 function Save-State([string]$id, $keys) {
-    $f = Join-Path $script:stateDir "$id.json"
-    Set-Content -Path $f -Value (ConvertTo-Json -InputObject @($keys) -Depth 2) -Encoding UTF8
+    $f = Join-Path $script:stateDir "$id.state"
+    $tmp = $f + '.tmp'
+    [System.IO.File]::WriteAllLines($tmp, [string[]]@($keys), (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -Path $tmp -Destination $f -Force
+    Remove-Item (Join-Path $script:stateDir "$id.json") -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------- Scannen
@@ -166,11 +185,18 @@ function Build-Plan($t) {
     function Add-Item($typ, $text, $rel, $src, $dst) {
         $plan.Add([pscustomobject]@{ Typ = $typ; Text = $text; Rel = $rel; Src = $src; Dst = $dst })
     }
+    $idx = 0; $total = $keys.Count
     foreach ($rel in $keys) {
+        $idx++
+        if (($idx -band 2047) -eq 0) {
+            if ($script:lblStatus) { $script:lblStatus.Text = "Vergleiche ... $idx / $total" }
+            Pump
+            if ($script:cancel) { throw 'DIRTOY_CANCEL' }
+        }
         $fa = $null; $fb = $null
         $inA = $da.TryGetValue($rel, [ref]$fa)
         $inB = $db.TryGetValue($rel, [ref]$fb)
-        $pa = Join-Path $rootA $rel; $pb = Join-Path $rootB $rel
+        $pa = $rootA + '\' + $rel; $pb = $rootB + '\' + $rel
         if ($inA -and $inB) {
             $dt = ($fa.LastWriteTimeUtc - $fb.LastWriteTimeUtc).TotalSeconds
             $differs = ([math]::Abs($dt) -gt 2) -or ($fa.Length -ne $fb.Length)
@@ -286,13 +312,15 @@ function Update-State($t, $r) {
     $script:exDirs = $r.ExDirs
     Scan-Dir (New-Object System.IO.DirectoryInfo $r.A) '' $r.Pats $da $dsA
     Scan-Dir (New-Object System.IO.DirectoryInfo $r.B) '' $r.Pats $db $dsB
-    $both = @($da.Keys | Where-Object { $db.ContainsKey($_) }) + @($dsA | Where-Object { $dsB.Contains($_) })
+    $both = New-Object System.Collections.Generic.List[string]
+    foreach ($k in $da.Keys) { if ($db.ContainsKey($k)) { $both.Add($k) } }
+    foreach ($k in $dsA) { if ($dsB.Contains($k)) { $both.Add($k) } }
     Save-State $t.Id $both
 }
 
 # ---------------------------------------------------------------- Log-Ausgabe
 function Write-LogLine([string]$aktion, [string]$datei, [string]$status) {
-    try { Add-Content -Path $script:logFile -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' | ' + $aktion + ' | ' + $datei + ' | ' + $status) -Encoding UTF8 } catch { }
+    try { [System.IO.File]::AppendAllText($script:logFile, ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' | ' + $aktion + ' | ' + $datei + ' | ' + $status + "`r`n"), [System.Text.Encoding]::UTF8) } catch { }
 }
 function Set-Progress([double]$frac) {
     if (-not $script:progFill) { return }
@@ -306,7 +334,7 @@ function Add-Log([string]$aktion, [string]$datei, [string]$status) {
         [void]$it.SubItems.Add($datei); [void]$it.SubItems.Add($status)
         $c = Get-StatusColor $status; if ($c) { $it.ForeColor = $c }
         [void]$script:lv.Items.Add($it)
-        $it.EnsureVisible()
+        if (-not $script:bulk) { $it.EnsureVisible() }
         return $it
     } else {
         Write-Host "$aktion | $datei | $status"
@@ -318,7 +346,7 @@ function Pump { if (-not $NoGui) { [System.Windows.Forms.Application]::DoEvents(
 function Run-Task($t, [bool]$preview) {
     $script:warn.Clear()
     $script:logOn = (-not $preview)
-    if (-not $preview) { Write-LogLine ("=== Aufgabe '" + $t.Name + "' (" + $(if ($script:headless) { 'automatisch' } else { 'manuell' }) + ', DirToy ' + $script:version + ')') '' '' }
+    if (-not $preview) { Limit-Log $script:logFile; Write-LogLine ("=== Aufgabe '" + $t.Name + "' (" + $(if ($script:headless) { 'automatisch' } else { 'manuell' }) + ', DirToy ' + $script:version + ')') '' '' }
     Set-Progress 0
     if ($script:lblStatus) { $script:lblStatus.Text = "Analysiere '$($t.Name)' ..." }
     Pump
@@ -341,8 +369,15 @@ function Run-Task($t, [bool]$preview) {
     $dels = @($plan | Where-Object { $_.Typ -eq 'Delete' -or $_.Typ -eq 'RmDir' }).Count
     if ($plan.Count -eq 0) { if (-not $preview) { try { Update-State $t $r } catch { } }; [void](Add-Log "Aufgabe '$($t.Name)'" 'Bereits synchron - nichts zu tun.' ''); return @{ Copied = 0; Deleted = 0; Errors = 0 } }
 
+    $uiMax = 2000   # mehr Zeilen machen die Liste langsam; vollstaendig steht alles im Protokoll
     if ($preview) {
-        foreach ($p in $plan) { [void](Add-Log $p.Text $p.Rel 'geplant') }
+        $script:bulk = $true
+        if ($script:lv) { $script:lv.BeginUpdate() }
+        try {
+            $n = 0
+            foreach ($p in $plan) { $n++; if ($n -gt $uiMax) { break }; [void](Add-Log $p.Text $p.Rel 'geplant') }
+        } finally { $script:bulk = $false; if ($script:lv) { $script:lv.EndUpdate() } }
+        if ($plan.Count -gt $uiMax) { [void](Add-Log "... und $($plan.Count - $uiMax) weitere Aktionen" "(Anzeige auf die ersten $uiMax begrenzt)" '') }
         [void](Add-Log "Aufgabe '$($t.Name)'" "Vorschau: $($plan.Count) Aktion(en), davon $dels Löschung(en)" '')
         return $null
     }
@@ -352,13 +387,20 @@ function Run-Task($t, [bool]$preview) {
             'Löschen bestätigen', 'YesNo', 'Warning')
         if ($ans -ne 'Yes') { [void](Add-Log "Aufgabe '$($t.Name)'" '' 'Abgebrochen.'); return $null }
     }
-    $copied = 0; $deleted = 0; $errors = 0; $i = 0; $cancelled = $false; $lastPump = [Environment]::TickCount
+    $copied = 0; $deleted = 0; $errors = 0; $i = 0; $cancelled = $false; $lastPump = [Environment]::TickCount - 1000
+    $shown = 0; $script:bulk = $true
     foreach ($p in $plan) {
         if ($script:cancel) { $cancelled = $true; break }
         $i++
-        if ($script:lblStatus) { $script:lblStatus.Text = "'$($t.Name)': $i / $($plan.Count)  ($([int](100 * $i / $plan.Count)) %)" }
-        Set-Progress ($i / $plan.Count)
-        $it = Add-Log $p.Text $p.Rel '...'
+        if (([Environment]::TickCount - $lastPump) -gt 100) {
+            $lastPump = [Environment]::TickCount
+            if ($script:lblStatus) { $script:lblStatus.Text = "'$($t.Name)': $i / $($plan.Count)  ($([int](100 * $i / $plan.Count)) %)" }
+            Set-Progress ($i / $plan.Count)
+            if ($script:lv -and $script:lv.Items.Count -gt 0) { $script:lv.EnsureVisible($script:lv.Items.Count - 1) }
+            Pump
+        }
+        $it = $null
+        if ($shown -lt $uiMax) { $it = Add-Log $p.Text $p.Rel '...'; $shown++ }
         try {
             $st = 'OK'
             switch ($p.Typ) {
@@ -386,11 +428,15 @@ function Run-Task($t, [bool]$preview) {
                 break
             }
             $errors++
-            if ($script:logOn) { Write-LogLine $p.Text $p.Rel ("FEHLER: " + $_.Exception.Message) }
-            if ($it) { $it.SubItems[2].Text = "FEHLER: $($_.Exception.Message)"; $it.ForeColor = (Get-StatusColor 'FEHLER') }
+            $emsg = 'FEHLER: ' + $_.Exception.Message
+            if ($it) {
+                if ($script:logOn) { Write-LogLine $p.Text $p.Rel $emsg }
+                $it.SubItems[2].Text = $emsg; $it.ForeColor = (Get-StatusColor 'FEHLER')
+            } else { [void](Add-Log $p.Text $p.Rel $emsg) }   # Fehler immer anzeigen (Add-Log schreibt auch ins Protokoll)
         }
-        if (([Environment]::TickCount - $lastPump) -gt 100) { $lastPump = [Environment]::TickCount; Pump }
     }
+    $script:bulk = $false
+    if ($plan.Count -gt $uiMax) { [void](Add-Log "Anzeige auf die ersten $uiMax Aktionen begrenzt" 'Alle Aktionen stehen im Protokoll (sync.log)' '') }
     if ($cancelled) {
         [void](Add-Log "Aufgabe '$($t.Name)' abgebrochen" "$copied kopiert, $deleted gelöscht, $errors Fehler - Lauf unvollständig, keine halben Dateien" '')
         return @{ Copied = $copied; Deleted = $deleted; Errors = $errors; Cancelled = $true }
@@ -1090,7 +1136,7 @@ $btnDel.Add_Click({
     if ([System.Windows.Forms.MessageBox]::Show("Aufgabe '$($t.Name)' löschen?`n(Die Ordner und Dateien bleiben unverändert.)", 'Löschen', 'YesNo', 'Question') -ne 'Yes') { return }
     try { Unregister-Sched $t } catch { }
     $script:tasks = @($script:tasks | Where-Object { $_.Id -ne $t.Id })
-    Remove-Item (Join-Path $script:stateDir "$($t.Id).json") -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $script:stateDir "$($t.Id).json"), (Join-Path $script:stateDir "$($t.Id).state") -ErrorAction SilentlyContinue
     Save-Tasks; Refresh-List ([math]::Min($i, $script:tasks.Count - 1))
 })
 
