@@ -1,0 +1,8 @@
+# Persoenliche Daten und Laufzeitdateien - nie hochladen
+DirToy-Daten/
+TwinSync-Daten/
+SyncTool-Daten/
+*.log
+*.alt
+*.tmp
+*.defekt-*
