@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.5.0'
+$script:version = '1.5.1'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -495,12 +495,24 @@ function Register-Sched($t) {
     [void](Register-ScheduledTask -TaskName $name -TaskPath $script:schedPath -Action $action -Trigger $trg -Settings $set -Principal $pri -Description "DirToy: $($t.Name)" -Force)
     $t.SchedName = $name
 }
+# Programm-Icon (64 px, PNG als Base64; die Mehrgroessen-Datei DirToy.ico liegt fuer Verknuepfungen daneben)
+$script:iconB64 = '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'
+function Get-AppIcon {
+    try {
+        $ms = New-Object System.IO.MemoryStream (,[Convert]::FromBase64String($script:iconB64))
+        $bmp = New-Object System.Drawing.Bitmap $ms
+        $h = $bmp.GetHicon(); $ic = [System.Drawing.Icon]::FromHandle($h).Clone()
+        [void][Win32Icon.U]::DestroyIcon($h); $bmp.Dispose(); $ms.Dispose()
+        return $ic
+    } catch { return $null }
+}
+if (-not ('Win32Icon.U' -as [type])) { Add-Type -Namespace Win32Icon -Name U -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool DestroyIcon(System.IntPtr h);' }
 function Send-Notify([string]$title, [string]$text, [bool]$isError) {
     try {
         Add-Type -AssemblyName System.Windows.Forms, System.Drawing
         if ($text.Length -gt 250) { $text = $text.Substring(0, 247) + '...' }
         $ni = New-Object System.Windows.Forms.NotifyIcon
-        $ni.Icon = [System.Drawing.SystemIcons]::Application
+        $ni.Icon = $(if ($script:iconB64 -and (Get-AppIcon)) { Get-AppIcon } else { [System.Drawing.SystemIcons]::Application })
         $ni.Visible = $true
         $ni.BalloonTipTitle = $title; $ni.BalloonTipText = $text
         $ni.BalloonTipIcon = $(if ($isError) { 'Error' } else { 'Info' })
@@ -629,7 +641,7 @@ $fTitle  = New-Object System.Drawing.Font('Segoe UI Semibold', 18)
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "DirToy $($script:version)"; $form.ClientSize = New-Object System.Drawing.Size(1080, 720); $form.MinimumSize = New-Object System.Drawing.Size(1090, 640)
-$form.StartPosition = 'CenterScreen'; $form.Font = $fNormal; $form.BackColor = $th.Bg; $form.ForeColor = $th.Text
+$form.StartPosition = 'CenterScreen'; $form.Font = $fNormal; $ico = Get-AppIcon; if ($ico) { $form.Icon = $ico }; $form.BackColor = $th.Bg; $form.ForeColor = $th.Text
 
 $AN = [System.Windows.Forms.AnchorStyles]
 $A_TL = $AN::Top -bor $AN::Left; $A_TLR = $A_TL -bor $AN::Right; $A_TR = $AN::Top -bor $AN::Right

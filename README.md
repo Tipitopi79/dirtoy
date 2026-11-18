@@ -29,6 +29,8 @@ Windows 10 oder 11 (Windows PowerShell 5.1 ist enthalten). Keine Installation n�
 1. `DirToy.ps1` und `DirToy.vbs` in einen Ordner legen.
 2. Doppelklick auf `DirToy.vbs` (startet ohne schwarzes Fenster).
 
+Das Programm-Icon ist in `DirToy.ps1` eingebaut (Fenster, Taskleiste, Benachrichtigung). Für eine Verknüpfung auf dem Desktop: Rechtsklick auf `DirToy.vbs` → Verknüpfung erstellen → Eigenschaften → Anderes Symbol → `DirToy.ico` wählen (liegt im Ordner, optional).
+
 Beim ersten Start wird der Ordner `DirToy-Daten` angelegt (Aufgaben, Zeitpläne, Protokoll).
 Wurde die ZIP-Datei aus dem Internet geladen, ggf. vorher in den Dateieigenschaften "Zulassen" anhaken.
 Die Skripte sind nicht signiert, Windows kann daher eine Warnung zeigen.
