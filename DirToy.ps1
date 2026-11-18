@@ -17,7 +17,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.3.0'
+$script:version = '1.4.0'
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
 $script:cancel = $false
@@ -490,8 +490,20 @@ Load-Tasks
 
 # ---- Theme (folgt dem Windows-Hell/Dunkel-Modus)
 function C([string]$hex) { [System.Drawing.ColorTranslator]::FromHtml($hex) }
+$script:settingsFile = Join-Path $script:dataDir 'einstellungen.json'
+function Get-ThemeSetting {
+    try { if (Test-Path $script:settingsFile) { $s = Get-Content $script:settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json; if ($s.Theme -in @('auto', 'hell', 'dunkel')) { return [string]$s.Theme } } } catch { }
+    return 'auto'
+}
+function Set-ThemeSetting([string]$v) {
+    try { Set-Content -Path $script:settingsFile -Value (ConvertTo-Json -InputObject @{ Theme = $v }) -Encoding UTF8 } catch { }
+}
+$script:themeSetting = Get-ThemeSetting
 $isDark = $false
-try { $isDark = ((Get-ItemPropertyValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name AppsUseLightTheme) -eq 0) } catch { }
+if ($script:themeSetting -eq 'dunkel') { $isDark = $true }
+elseif ($script:themeSetting -eq 'auto') {
+    try { $isDark = ((Get-ItemPropertyValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name AppsUseLightTheme) -eq 0) } catch { }
+}
 if ($isDark) {
     $script:th = @{ Bg = (C '#202020'); Surface = (C '#2B2B2B'); Input = (C '#1C1C1C'); Text = (C '#F2F2F2'); Muted = (C '#A6A6A6')
         Border = (C '#454545'); Accent = (C '#4CC2FF'); AccentText = (C '#000000'); AccentHover = (C '#7AD2FF'); SelBg = (C '#3A3A3A')
@@ -568,11 +580,13 @@ $lt = New-Object System.Windows.Forms.Label; $lt.Text = 'DirToy'; $lt.Font = $fT
 [void](New-Label $side 20 110 230 'AUFGABEN' $true)
 $lb = New-Object System.Windows.Forms.ListBox
 $lb.BorderStyle = 'None'; $lb.BackColor = $th.Surface; $lb.ForeColor = $th.Text; $lb.DrawMode = 'OwnerDrawFixed'; $lb.ItemHeight = 38
-[void](Add-To $side $lb 0 134 270 470); $lb.Anchor = $A_TLB
+[void](Add-To $side $lb 0 134 270 430); $lb.Anchor = $A_TLB
 $btnNew = New-Btn $side 16 664 112 38 '+ Neu' $false $th.Surface
 $btnDel = New-Btn $side 140 664 112 38 'Löschen' $false $th.Surface
 $btnNew.Anchor = $A_BL; $btnDel.Anchor = $A_BL
 $btnHelp = New-Btn $side 16 618 236 36 'Hilfe' $false $th.Surface; $btnHelp.Anchor = $A_BL
+$themeNames = @{ auto = 'Design: Automatisch'; hell = 'Design: Hell'; dunkel = 'Design: Dunkel' }
+$btnTheme = New-Btn $side 16 574 236 36 $themeNames[$script:themeSetting] $false $th.Surface; $btnTheme.Anchor = $A_BL
 $lb.Add_DrawItem({
     param($s, $e)
     if ($e.Index -lt 0) { return }
@@ -683,6 +697,7 @@ $tip.SetToolTip($btnLog, 'Öffnet das Protokoll aller bisherigen Läufe (sync.lo
 $tip.SetToolTip($btnNew, 'Neue Sync-Aufgabe anlegen.')
 $tip.SetToolTip($btnDel, 'Gewählte Aufgabe löschen (Dateien bleiben unverändert, ein Zeitplan wird mit entfernt).')
 $tip.SetToolTip($btnHelp, 'Anleitung zum Tool.')
+$tip.SetToolTip($btnTheme, 'Wechselt zwischen Automatisch (wie Windows), Hell und Dunkel. DirToy startet dabei kurz neu.')
 $tip.SetToolTip($tbEx, 'Mit ; getrennt. Platzhalter * und ? erlaubt. Gilt für Dateien und Ordnernamen in beiden Ordnern.')
 
 # Dunkle Titelleiste
@@ -826,6 +841,8 @@ function Show-Help {
     HelpP 'Nach einem automatischen Lauf kann eine Windows-Meldung erscheinen: nie, wenn etwas passiert ist oder Fehler auftraten, oder nur bei Fehlern.'
     HelpH 'Protokoll'
     HelpP 'Die Liste unten zeigt den aktuellen Lauf. Alle echten Läufe, manuell und automatisch, stehen zusätzlich mit Uhrzeit in DirToy-Daten\sync.log. Der Button "Protokoll" öffnet diese Datei.'
+    HelpH 'Design'
+    HelpP 'Der Button "Design" unten links wechselt zwischen Automatisch (wie Windows), Hell und Dunkel. DirToy startet dabei kurz neu, die Einstellung steht in DirToy-Daten\einstellungen.json.'
     HelpH 'Wo liegen meine Daten?'
     HelpP 'Aufgaben und Zeitpläne stehen in DirToy-Daten\aufgaben.json neben dem Programm. Verschiebst du DirToy.ps1, speichere die Zeitpläne danach einmal neu. Bei Startproblemen steht der Grund in DirToy-Daten\fehler.log.'
     $rb.SelectionStart = 0; $rb.ScrollToCaret()
@@ -1078,6 +1095,17 @@ $btnDel.Add_Click({
 })
 
 $btnHelp.Add_Click({ Show-Help })
+$btnTheme.Add_Click({
+    if ($script:busy) { return }
+    $next = @{ auto = 'hell'; hell = 'dunkel'; dunkel = 'auto' }[$script:themeSetting]
+    Set-ThemeSetting $next
+    Save-Tasks
+    # Design wird beim Aufbau des Fensters gesetzt: Programm kurz neu starten
+    $vbs = Join-Path $PSScriptRoot 'DirToy.vbs'
+    if (Test-Path $vbs) { Start-Process wscript.exe -ArgumentList "`"$vbs`"" }
+    else { Start-Process powershell.exe -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$($script:scriptPath)`"" }
+    $form.Close()
+})
 $btnLog.Add_Click({
     if (Test-Path $script:logFile) { Start-Process notepad.exe -ArgumentList "`"$($script:logFile)`"" }
     else { [void][System.Windows.Forms.MessageBox]::Show('Es gibt noch kein Protokoll. Es entsteht beim ersten Sync-Lauf.', 'Protokoll') }

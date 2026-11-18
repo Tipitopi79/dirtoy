@@ -17,7 +17,7 @@ Geschrieben in PowerShell (WinForms), ohne Installation lauffähig.
 - **Fortschrittsbalken** und **Protokoll** (Liste im Fenster und `sync.log`)
 - **Zeitpläne** direkt im Tool: legt Einträge im Windows-Aufgabenplaner an, ändert und entfernt sie
 - Windows-**Benachrichtigung** nach automatischen Läufen
-- Hell/Dunkel-Modus passend zu Windows
+- **Hell- und Dunkel-Design**: automatisch wie Windows oder fest einstellbar (Button "Design")
 
 ## Voraussetzungen
 
