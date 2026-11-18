@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.5.2'
+$script:version = '1.5.3'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -343,28 +343,28 @@ function Add-Log([string]$aktion, [string]$datei, [string]$status) {
 }
 function Pump { if (-not $NoGui) { [System.Windows.Forms.Application]::DoEvents() } }
 
-# Vollstaendige Vorschau als Textdatei (Zusammenfassung oben, dann jede Aktion); Rueckgabe: Pfad oder $null
+# Vollstaendige Vorschau als CSV (Semikolon, UTF-8 mit BOM: oeffnet in Excel mit richtigen Umlauten und Spalten); Rueckgabe: Pfad oder $null
 function Write-PreviewFile($t, $plan) {
     try {
-        $path = Join-Path $script:dataDir 'vorschau.txt'
-        $byAct = [ordered]@{}; $byDir = @{}
-        foreach ($p in $plan) {
-            if ($byAct.Contains($p.Text)) { $byAct[$p.Text]++ } else { $byAct[$p.Text] = 1 }
-            $parts = $p.Rel.TrimEnd('\').Split('\')
-            $d = if ($parts.Count -ge 3) { $parts[0] + '\' + $parts[1] } elseif ($parts.Count -ge 2) { $parts[0] } else { '(oberste Ebene)' }
-            if ($byDir.ContainsKey($d)) { $byDir[$d]++ } else { $byDir[$d] = 1 }
-        }
+        $path = Join-Path $script:dataDir 'vorschau.csv'
+        Remove-Item (Join-Path $script:dataDir 'vorschau.txt') -Force -ErrorAction SilentlyContinue
         $sw = New-Object System.IO.StreamWriter($path, $false, (New-Object System.Text.UTF8Encoding($true)))
         try {
-            $sw.WriteLine("DirToy - Vorschau der Aufgabe '$($t.Name)' vom " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
-            $sw.WriteLine("Ordner A: $($t.A)"); $sw.WriteLine("Ordner B: $($t.B)")
-            $sw.WriteLine("Insgesamt $($plan.Count) Aktion(en). Es wurde nichts verändert.")
-            $sw.WriteLine(''); $sw.WriteLine('ZUSAMMENFASSUNG NACH AKTION')
-            foreach ($k in $byAct.Keys) { $sw.WriteLine(('  {0,8}  {1}' -f $byAct[$k], $k)) }
-            $sw.WriteLine(''); $sw.WriteLine('BETROFFENE ORDNER (die 25 mit den meisten Aktionen)')
-            foreach ($e in ($byDir.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 25)) { $sw.WriteLine(('  {0,8}  {1}' -f $e.Value, $e.Key)) }
-            $sw.WriteLine(''); $sw.WriteLine('ALLE AKTIONEN'); $sw.WriteLine('Aktion | Pfad (relativ)')
-            foreach ($p in $plan) { $sw.WriteLine($p.Text + ' | ' + $p.Rel) }
+            $sw.WriteLine('Aktion;Ordner;Datei;Relativer Pfad')
+            foreach ($p in $plan) {
+                $rel = $p.Rel
+                $isDir = $rel.EndsWith('\')
+                $x = $rel.TrimEnd('\'); $i = $x.LastIndexOf('\')
+                $dir = if ($i -ge 0) { $x.Substring(0, $i) } else { '' }
+                $name = if ($isDir) { '' } elseif ($i -ge 0) { $x.Substring($i + 1) } else { $x }
+                if ($isDir) { $dir = $x }
+                $cells = foreach ($c in @($p.Text, $dir, $name, $rel)) {
+                    $c = [string]$c
+                    if ($c.Length -gt 0 -and '=+-@'.Contains($c[0])) { $c = "'" + $c }   # Excel soll Pfade nie als Formel lesen
+                    '"' + $c.Replace('"', '""') + '"'
+                }
+                $sw.WriteLine($cells -join ';')
+            }
         } finally { $sw.Dispose() }
         return $path
     } catch { return $null }
@@ -405,7 +405,9 @@ function Run-Task($t, [bool]$preview) {
         } finally { $script:bulk = $false; if ($script:lv) { $script:lv.EndUpdate() } }
         if ($plan.Count -gt $uiMax) {
             $pf = Write-PreviewFile $t $plan
-            $it = Add-Log "... und $($plan.Count - $uiMax) weitere Aktionen" $(if ($pf) { '(Doppelklick: komplette Liste öffnen)' } else { "(Anzeige auf die ersten $uiMax begrenzt)" }) ''
+            $cnt = [ordered]@{}; foreach ($p in $plan) { if ($cnt.Contains($p.Text)) { $cnt[$p.Text]++ } else { $cnt[$p.Text] = 1 } }
+            foreach ($k in $cnt.Keys) { [void](Add-Log "Insgesamt: $k" ('{0:N0} Aktion(en)' -f $cnt[$k]) '') }
+            $it = Add-Log "... und $($plan.Count - $uiMax) weitere Aktionen" $(if ($pf) { '(Doppelklick: komplette Liste als CSV öffnen)' } else { "(Anzeige auf die ersten $uiMax begrenzt)" }) ''
             if ($it -and $pf) { $it.Tag = $pf }
         }
         [void](Add-Log "Aufgabe '$($t.Name)'" "Vorschau: $($plan.Count) Aktion(en), davon $dels Löschung(en)" '')
@@ -418,7 +420,7 @@ function Run-Task($t, [bool]$preview) {
         if ($ans -ne 'Yes') { [void](Add-Log "Aufgabe '$($t.Name)'" '' 'Abgebrochen.'); return $null }
     }
     $copied = 0; $deleted = 0; $errors = 0; $i = 0; $cancelled = $false; $lastPump = [Environment]::TickCount - 1000
-    $shown = 0; $script:bulk = $true
+    $errList = New-Object System.Collections.Generic.List[string]; $script:bulk = $true
     foreach ($p in $plan) {
         if ($script:cancel) { $cancelled = $true; break }
         $i++
@@ -426,11 +428,16 @@ function Run-Task($t, [bool]$preview) {
             $lastPump = [Environment]::TickCount
             if ($script:lblStatus) { $script:lblStatus.Text = "'$($t.Name)': $i / $($plan.Count)  ($([int](100 * $i / $plan.Count)) %)" }
             Set-Progress ($i / $plan.Count)
-            if ($script:lv -and $script:lv.Items.Count -gt 0) { $script:lv.EnsureVisible($script:lv.Items.Count - 1) }
+            if ($script:lv -and $script:lv.Items.Count -gt 0) {
+                # Laufendes Fenster: aelteste Zeilen fliegen raus, es bleiben die letzten $uiMax (alles steht im Protokoll)
+                $ex = $script:lv.Items.Count - $uiMax
+                if ($ex -gt 0) { $script:lv.BeginUpdate(); try { for ($k = 0; $k -lt $ex; $k++) { $script:lv.Items.RemoveAt(0) } } finally { $script:lv.EndUpdate() } }
+                $script:lv.EnsureVisible($script:lv.Items.Count - 1)
+            }
             Pump
         }
         $it = $null
-        if ($shown -lt $uiMax) { $it = Add-Log $p.Text $p.Rel '...'; $shown++ }
+        $it = Add-Log $p.Text $p.Rel '...'
         try {
             $st = 'OK'
             switch ($p.Typ) {
@@ -459,6 +466,7 @@ function Run-Task($t, [bool]$preview) {
             }
             $errors++
             $emsg = 'FEHLER: ' + $_.Exception.Message
+            if ($errList.Count -lt 50) { $errList.Add($p.Text + ' | ' + $p.Rel + ' | ' + $emsg) }
             if ($it) {
                 if ($script:logOn) { Write-LogLine $p.Text $p.Rel $emsg }
                 $it.SubItems[2].Text = $emsg; $it.ForeColor = (Get-StatusColor 'FEHLER')
@@ -466,7 +474,11 @@ function Run-Task($t, [bool]$preview) {
         }
     }
     $script:bulk = $false
-    if ($plan.Count -gt $uiMax) { [void](Add-Log "Anzeige auf die ersten $uiMax Aktionen begrenzt" 'Alle Aktionen stehen im Protokoll (sync.log)' '') }
+    if ($plan.Count -gt $uiMax) {
+        if ($script:lv) { $script:lv.BeginUpdate(); try { while ($script:lv.Items.Count -gt $uiMax) { $script:lv.Items.RemoveAt(0) } } finally { $script:lv.EndUpdate() } }
+        [void](Add-Log "Anzeige zeigt nur die letzten $uiMax Aktionen" 'Alle Aktionen stehen im Protokoll (sync.log)' '')
+        if ($errList.Count -gt 0) { [void](Add-Log "Fehler dieses Laufs ($errors, höchstens 50 hier gelistet)" '' ''); foreach ($e in $errList) { [void](Add-Log $e '' '') } }
+    }
     if ($cancelled) {
         [void](Add-Log "Aufgabe '$($t.Name)' abgebrochen" "$copied kopiert, $deleted gelöscht, $errors Fehler - Lauf unvollständig, keine halben Dateien" '')
         return @{ Copied = $copied; Deleted = $deleted; Errors = $errors; Cancelled = $true }
@@ -808,7 +820,10 @@ $lv.Add_DrawItem({ param($s, $e) })
 $lv.Add_DoubleClick({
     if ($lv.SelectedItems.Count -gt 0) {
         $f = $lv.SelectedItems[0].Tag
-        if ($f -is [string] -and $f.EndsWith('vorschau.txt') -and (Test-Path $f)) { Start-Process notepad.exe -ArgumentList "`"$f`"" }
+        if ($f -is [string] -and $f.EndsWith('vorschau.csv') -and (Test-Path $f)) {
+            try { Start-Process -FilePath $f -ErrorAction Stop }
+            catch { Start-Process notepad.exe -ArgumentList "`"$f`"" }   # keine Zuordnung fuer .csv: im Editor oeffnen
+        }
     }
 })
 $lv.Add_DrawSubItem({
@@ -992,7 +1007,7 @@ function Show-Help {
     HelpP 'Mit "Zeitplan ..." legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten oder bei der Anmeldung. Du kannst ihn dort jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen.'
     HelpP 'Nach einem automatischen Lauf kann eine Windows-Meldung erscheinen: nie, wenn etwas passiert ist oder Fehler auftraten, oder nur bei Fehlern.'
     HelpH 'Große Vorschau'
-    HelpP 'Die Liste zeigt höchstens 2000 Zeilen. Gibt es mehr Aktionen, steht am Ende die Zeile "... und N weitere Aktionen": Ein Doppelklick darauf öffnet die komplette Vorschau in Notepad (DirToy-Daten\vorschau.txt) mit Zusammenfassung nach Aktion, den am stärksten betroffenen Ordnern und allen Aktionen. Bei einem echten Lauf werden immer alle Aktionen ausgeführt und im Protokoll festgehalten.'
+    HelpP 'Die Liste zeigt höchstens 2000 Zeilen. Gibt es mehr Aktionen, steht am Ende die Zeile "... und N weitere Aktionen": Ein Doppelklick darauf öffnet die komplette Vorschau als CSV-Datei (DirToy-Daten\vorschau.csv, z. B. in Excel) mit den Spalten Aktion, Ordner, Datei und Relativer Pfad, die du dort filtern und sortieren kannst. Die Summen je Aktion stehen schon in der Liste. Bei einem echten Lauf läuft die Liste mit: Es bleiben die letzten 2000 Aktionen sichtbar, die ältesten fallen oben heraus (Fehler werden am Ende noch einmal aufgelistet). Alle Aktionen werden ausgeführt und stehen im Protokoll.'
     HelpH 'Protokoll'
     HelpP 'Die Liste unten zeigt den aktuellen Lauf. Alle echten Läufe, manuell und automatisch, stehen zusätzlich mit Uhrzeit in DirToy-Daten\sync.log. Der Button "Protokoll" öffnet diese Datei.'
     HelpH 'Design'
