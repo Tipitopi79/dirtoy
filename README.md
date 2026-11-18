@@ -10,6 +10,8 @@ Geschrieben in PowerShell (WinForms), ohne Installation lauffähig.
 - Beliebig viele **Sync-Aufgaben** mit je zwei Ordnern (A und B)
 - **Drei Modi**: Synchronisieren (beidseitig), Echo (A → B, B wird wie A), Beitragen (A → B, ohne Löschen)
 - **Ordner 1:1 identisch**: alle Unterordner werden rekursiv gespiegelt, auch leere; angelegt und (außer im Modus *Beitragen*) auch gelöscht
+- **Sicheres Kopieren**: Dateien werden erst als Zwischendatei (`.dirtoy-tmp`) geschrieben und am Ende umbenannt – bei Abbruch oder Absturz bleibt das Original im Ziel unverändert. Mit **Abbrechen** stoppt ein Lauf nach der aktuellen Datei, auch beim Schließen des Fensters.
+- **Ordnerbaum zum Abwählen**: beide Ordner nebeneinander als Baum, Haken entfernen = Ordner samt Unterordnern wird nicht synchronisiert. Neue Ordner sind standardmäßig dabei, gespeichert werden nur die abgewählten
 - **Ausschlussfeld**: Dateinamen und Muster mit `;` getrennt, z. B. `Thumbs.db;*.tmp;node_modules`
 - **Vorschau** zeigt, was passieren würde, ohne etwas zu verändern
 - **Fortschrittsbalken** und **Protokoll** (Liste im Fenster und `sync.log`)

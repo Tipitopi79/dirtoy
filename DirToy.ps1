@@ -17,7 +17,14 @@ trap {
     }
     exit 1
 }
-$script:version = '1.1.0'
+$script:version = '1.3.0'
+$script:tmpSuffix = '.dirtoy-tmp'
+$script:pumpMs = 150
+$script:cancel = $false
+$script:inPlan = $false
+$script:scanCount = 0
+$script:tmpFiles = $null
+$script:copyBuf = $null
 $script:dataDir  = if ($env:DIRTOY_DATA) { $env:DIRTOY_DATA } else { Join-Path $PSScriptRoot 'DirToy-Daten' }
 $script:stateDir = Join-Path $script:dataDir 'state'
 $script:taskFile = Join-Path $script:dataDir 'aufgaben.json'
@@ -61,6 +68,7 @@ function Load-Tasks {
             foreach ($pn in @('Schedule', 'SchedName')) {
                 if (-not $t.PSObject.Properties[$pn]) { Add-Member -InputObject $t -NotePropertyName $pn -NotePropertyValue $(if ($pn -eq 'SchedName') { '' } else { $null }) }
             }
+            if (-not $t.PSObject.Properties['ExcludeDirs']) { Add-Member -InputObject $t -NotePropertyName 'ExcludeDirs' -NotePropertyValue ([string[]]@()) }
         } }
     }
 }
@@ -71,7 +79,7 @@ function Save-Tasks {
     Move-Item -Path $tmp -Destination $script:taskFile -Force
 }
 function New-Task([string]$name) {
-    [pscustomobject]@{ Id = [guid]::NewGuid().ToString('N'); Name = $name; A = ''; B = ''; Mode = 0; Exclude = 'Thumbs.db;desktop.ini;~$*;*.tmp'; Schedule = $null; SchedName = '' }
+    [pscustomobject]@{ Id = [guid]::NewGuid().ToString('N'); Name = $name; A = ''; B = ''; Mode = 0; Exclude = 'Thumbs.db;desktop.ini;~$*;*.tmp'; ExcludeDirs = [string[]]@(); Schedule = $null; SchedName = '' }
 }
 
 # ---------------------------------------------------------------- Zustand (zum Erkennen von Löschungen)
@@ -100,15 +108,31 @@ function Scan-Dir([System.IO.DirectoryInfo]$dir, [string]$rel, $pats, $dict, $di
     try { $entries = $dir.GetFileSystemInfos() }
     catch { $script:warn.Add("$($dir.FullName): $($_.Exception.Message)"); return }
     foreach ($e in $entries) {
+        $script:scanCount++
+        if (($script:scanCount % 300) -eq 0) {
+            if ($script:lblStatus) { $script:lblStatus.Text = "Lese Ordner ein ... ($($script:scanCount) Einträge)" }
+            Pump
+            if ($script:cancel -and $script:inPlan) { throw 'DIRTOY_CANCEL' }
+        }
+        if ($e -isnot [System.IO.DirectoryInfo] -and $e.Name.EndsWith($script:tmpSuffix, [StringComparison]::OrdinalIgnoreCase)) {
+            if ($null -ne $script:tmpFiles) { $script:tmpFiles.Add($e.FullName) }
+            continue
+        }
         if (Test-Excluded $e.Name $pats) { continue }
         if ($e -is [System.IO.DirectoryInfo]) {
             if ($e.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+            if ($script:exDirs -and $script:exDirs.Contains($rel + $e.Name + '\')) { continue }   # im Ordnerbaum abgewaehlt
             if ($dirs) { [void]$dirs.Add($rel + $e.Name + '\') }
             Scan-Dir $e ($rel + $e.Name + '\') $pats $dict $dirs
         } else {
             $dict[$rel + $e.Name] = $e
         }
     }
+}
+function Get-ExcludeDirs($t) {
+    $set = New-DirSet
+    foreach ($x in @($t.ExcludeDirs)) { if ($x) { [void]$set.Add(([string]$x).TrimEnd('\') + '\') } }
+    return ,$set
 }
 function Get-Patterns($t) { @(([string]$t.Exclude) -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 
@@ -124,8 +148,13 @@ function Build-Plan($t) {
     }
     $pats = Get-Patterns $t
     $da = New-Dict; $db = New-Dict; $dsA = New-DirSet; $dsB = New-DirSet
-    Scan-Dir (New-Object System.IO.DirectoryInfo $rootA) '' $pats $da $dsA
-    Scan-Dir (New-Object System.IO.DirectoryInfo $rootB) '' $pats $db $dsB
+    $script:tmpFiles = New-Object System.Collections.Generic.List[string]
+    $exDirs = Get-ExcludeDirs $t; $script:exDirs = $exDirs
+    $script:scanCount = 0; $script:inPlan = $true
+    try {
+        Scan-Dir (New-Object System.IO.DirectoryInfo $rootA) '' $pats $da $dsA
+        Scan-Dir (New-Object System.IO.DirectoryInfo $rootB) '' $pats $db $dsB
+    } finally { $script:inPlan = $false }
     $state = Get-State $t.Id
     $mode = [int]$t.Mode
 
@@ -205,22 +234,56 @@ function Build-Plan($t) {
     $final.AddRange($mk)
     $final.AddRange($plan)
     foreach ($x in ($rm | Sort-Object { $_.Rel.Length } -Descending)) { $final.Add($x) }
-    return [pscustomobject]@{ Plan = $final; A = $rootA; B = $rootB; Pats = $pats }
+    return [pscustomobject]@{ Plan = $final; A = $rootA; B = $rootB; Pats = $pats; ExDirs = $exDirs }
 }
 
 # ---------------------------------------------------------------- Plan ausführen
 function Copy-One($src, $dst) {
     $dir = [System.IO.Path]::GetDirectoryName($dst)
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-    if (Test-Path -LiteralPath $dst) { [System.IO.File]::SetAttributes($dst, [System.IO.FileAttributes]::Normal) }
-    [System.IO.File]::Copy($src, $dst, $true)
-    [System.IO.File]::SetLastWriteTimeUtc($dst, [System.IO.File]::GetLastWriteTimeUtc($src))
+    # Sicher kopieren: erst in eine Zwischendatei schreiben, erst wenn sie komplett ist an die Stelle des Ziels setzen.
+    # Bei Abbruch/Absturz bleibt das Original im Ziel unveraendert.
+    $tmp = $dst + $script:tmpSuffix
+    $in = $null; $out = $null; $ok = $false
+    try {
+        $in = New-Object System.IO.FileStream($src, 'Open', 'Read', 'ReadWrite')
+        $out = New-Object System.IO.FileStream($tmp, 'Create', 'Write', 'None')
+        if (-not $script:copyBuf) { $script:copyBuf = New-Object byte[] (4MB) }
+        $total = $in.Length; $done = 0; $last = [Environment]::TickCount
+        while (($n = $in.Read($script:copyBuf, 0, $script:copyBuf.Length)) -gt 0) {
+            $out.Write($script:copyBuf, 0, $n); $done += $n
+            if ($script:cancel) { throw 'DIRTOY_CANCEL' }
+            if (([Environment]::TickCount - $last) -ge $script:pumpMs) {
+                $last = [Environment]::TickCount
+                if ($script:lblStatus -and $total -gt 8MB) { $script:lblStatus.Text = "Kopiere $([System.IO.Path]::GetFileName($src)): $([int](100 * $done / $total)) %" }
+                Pump
+            }
+        }
+        $out.Dispose(); $out = $null; $in.Dispose(); $in = $null
+        $attr = [System.IO.File]::GetAttributes($src)
+        $utc = [System.IO.File]::GetLastWriteTimeUtc($src)
+        [System.IO.File]::SetLastWriteTimeUtc($tmp, $utc)
+        if (Test-Path -LiteralPath $dst) {
+            [System.IO.File]::SetAttributes($dst, [System.IO.FileAttributes]::Normal)
+            try { [System.IO.File]::Replace($tmp, $dst, $null) }
+            catch { [System.IO.File]::Delete($dst); [System.IO.File]::Move($tmp, $dst) }
+        } else {
+            [System.IO.File]::Move($tmp, $dst)
+        }
+        $ok = $true
+        try { [System.IO.File]::SetLastWriteTimeUtc($dst, $utc); [System.IO.File]::SetAttributes($dst, $attr) } catch { }
+    } finally {
+        if ($out) { $out.Dispose() }
+        if ($in) { $in.Dispose() }
+        if (-not $ok) { try { if (Test-Path -LiteralPath $tmp) { [System.IO.File]::Delete($tmp) } } catch { } }
+    }
 }
 function Delete-One($path) {
     [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($path, 'OnlyErrorDialogs', 'SendToRecycleBin')
 }
 function Update-State($t, $r) {
     $da = New-Dict; $db = New-Dict; $dsA = New-DirSet; $dsB = New-DirSet
+    $script:exDirs = $r.ExDirs
     Scan-Dir (New-Object System.IO.DirectoryInfo $r.A) '' $r.Pats $da $dsA
     Scan-Dir (New-Object System.IO.DirectoryInfo $r.B) '' $r.Pats $db $dsB
     $both = @($da.Keys | Where-Object { $db.ContainsKey($_) }) + @($dsA | Where-Object { $dsB.Contains($_) })
@@ -260,8 +323,20 @@ function Run-Task($t, [bool]$preview) {
     if ($script:lblStatus) { $script:lblStatus.Text = "Analysiere '$($t.Name)' ..." }
     Pump
     try { $r = Build-Plan $t }
-    catch { [void](Add-Log "Aufgabe '$($t.Name)'" '' "FEHLER: $($_.Exception.Message)"); return $null }
+    catch {
+        if ($_.Exception.Message -eq 'DIRTOY_CANCEL') { [void](Add-Log "Aufgabe '$($t.Name)'" 'Abgebrochen (nichts wurde verändert).' ''); return @{ Copied = 0; Deleted = 0; Errors = 0; Cancelled = $true } }
+        [void](Add-Log "Aufgabe '$($t.Name)'" '' "FEHLER: $($_.Exception.Message)"); return $null
+    }
     foreach ($w in $script:warn) { [void](Add-Log 'Warnung' $w 'übersprungen') }
+    if (-not $preview) {
+        # liegengebliebene Zwischendateien frueherer, abgebrochener Laeufe aufraeumen
+        foreach ($tf in @($script:tmpFiles)) {
+            try {
+                $fi = Get-Item -LiteralPath $tf -Force
+                if (((Get-Date) - $fi.LastWriteTime).TotalMinutes -gt 5) { Remove-Item -LiteralPath $tf -Force; [void](Add-Log 'Aufgeräumt' $tf 'Zwischendatei gelöscht') }
+            } catch { }
+        }
+    }
     $plan = $r.Plan
     $dels = @($plan | Where-Object { $_.Typ -eq 'Delete' -or $_.Typ -eq 'RmDir' }).Count
     if ($plan.Count -eq 0) { if (-not $preview) { try { Update-State $t $r } catch { } }; [void](Add-Log "Aufgabe '$($t.Name)'" 'Bereits synchron - nichts zu tun.' ''); return @{ Copied = 0; Deleted = 0; Errors = 0 } }
@@ -277,8 +352,9 @@ function Run-Task($t, [bool]$preview) {
             'Löschen bestätigen', 'YesNo', 'Warning')
         if ($ans -ne 'Yes') { [void](Add-Log "Aufgabe '$($t.Name)'" '' 'Abgebrochen.'); return $null }
     }
-    $copied = 0; $deleted = 0; $errors = 0; $i = 0
+    $copied = 0; $deleted = 0; $errors = 0; $i = 0; $cancelled = $false; $lastPump = [Environment]::TickCount
     foreach ($p in $plan) {
+        if ($script:cancel) { $cancelled = $true; break }
         $i++
         if ($script:lblStatus) { $script:lblStatus.Text = "'$($t.Name)': $i / $($plan.Count)  ($([int](100 * $i / $plan.Count)) %)" }
         Set-Progress ($i / $plan.Count)
@@ -303,11 +379,21 @@ function Run-Task($t, [bool]$preview) {
             if ($script:logOn) { Write-LogLine $p.Text $p.Rel $st }
             if ($it) { $it.SubItems[2].Text = $st; $it.ForeColor = (Get-StatusColor $st) }
         } catch {
+            if ($_.Exception.Message -eq 'DIRTOY_CANCEL') {
+                $cancelled = $true
+                if ($script:logOn) { Write-LogLine $p.Text $p.Rel 'abgebrochen (Zieldatei unverändert)' }
+                if ($it) { $it.SubItems[2].Text = 'abgebrochen'; $it.ForeColor = (Get-StatusColor 'abgebrochen') }
+                break
+            }
             $errors++
             if ($script:logOn) { Write-LogLine $p.Text $p.Rel ("FEHLER: " + $_.Exception.Message) }
             if ($it) { $it.SubItems[2].Text = "FEHLER: $($_.Exception.Message)"; $it.ForeColor = (Get-StatusColor 'FEHLER') }
         }
-        if ($i % 10 -eq 0) { Pump }
+        if (([Environment]::TickCount - $lastPump) -gt 100) { $lastPump = [Environment]::TickCount; Pump }
+    }
+    if ($cancelled) {
+        [void](Add-Log "Aufgabe '$($t.Name)' abgebrochen" "$copied kopiert, $deleted gelöscht, $errors Fehler - Lauf unvollständig, keine halben Dateien" '')
+        return @{ Copied = $copied; Deleted = $deleted; Errors = $errors; Cancelled = $true }
     }
     if ($errors -eq 0) { try { Update-State $t $r } catch { [void](Add-Log 'Warnung' 'Zustand konnte nicht gespeichert werden' $_.Exception.Message) } }
     Set-Progress 1
@@ -420,7 +506,7 @@ function Get-StatusColor([string]$st) {
     if (-not $script:th) { return $null }
     if ($st -like 'FEHLER*') { return $script:th.Err }
     if ($st -eq 'OK') { return $script:th.Ok }
-    if ($st -eq 'geplant' -or $st -like 'übersprungen*') { return $script:th.Muted }
+    if ($st -eq 'geplant' -or $st -like 'übersprungen*' -or $st -like 'abgebrochen*') { return $script:th.Muted }
     return $script:th.Text
 }
 
@@ -523,11 +609,14 @@ foreach ($m in $script:modes) { [void]$cmb.Items.Add($m) }
 [void](Add-To $card $cmb 20 214 $iw 28); $cmb.Anchor = $A_TLR
 [void](New-Label $card 20 250 $iw 'Nicht synchronisieren  (Dateinamen/Muster mit ;  getrennt, z.B.  Thumbs.db;*.tmp;~$*;node_modules)' $true)
 $card.Height = 316
-$tbEx = New-Input $card 20 272 $iw; $tbEx.Anchor = $A_TLR
+$tbEx = New-Input $card 20 272 ($iw - 176); $tbEx.Anchor = $A_TLR
+$btnDirs = New-Btn $card ($cw - 20 - 166) 270 166 32 'Ordner wählen ...' $false $th.Surface; $btnDirs.Anchor = $A_TR
+$script:btnDirs = $btnDirs
 
 $btnPrev = New-Btn $main 20 340 130 40 'Vorschau' $false $th.Bg
 $btnRun  = New-Btn $main 160 340 170 40 'Synchronisieren' $true $null
 $btnAll  = New-Btn $main 340 340 200 40 'Alle Aufgaben ausführen' $false $th.Bg
+$btnCancel = New-Btn $main 160 340 170 40 'Abbrechen' $false $th.Bg; $btnCancel.Visible = $false
 $btnSched = New-Btn $main 550 340 115 40 'Zeitplan ...' $false $th.Bg; $btnSched.Anchor = $A_TL
 $btnLog = New-Btn $main 675 340 115 40 'Protokoll' $false $th.Bg; $btnLog.Anchor = $A_TL
 # Fortschrittsbalken
@@ -587,6 +676,8 @@ $tip.SetToolTip($cmb, 'Synchronisieren: beidseitig, mit Löschungen. Echo: B wir
 $tip.SetToolTip($btnPrev, 'Zeigt nur an, was passieren würde. Es wird nichts verändert.')
 $tip.SetToolTip($btnRun, 'Führt die gewählte Aufgabe jetzt aus.')
 $tip.SetToolTip($btnAll, 'Führt alle Aufgaben nacheinander aus.')
+$tip.SetToolTip($btnDirs, 'Zeigt beide Ordner als Baum. Ordner abhaken, die nicht synchronisiert werden sollen.')
+$tip.SetToolTip($btnCancel, 'Bricht nach der aktuellen Datei ab. Es bleiben keine halben Dateien zurück.')
 $tip.SetToolTip($btnSched, 'Automatische Ausführung im Windows-Aufgabenplaner anlegen, ändern oder entfernen.')
 $tip.SetToolTip($btnLog, 'Öffnet das Protokoll aller bisherigen Läufe (sync.log).')
 $tip.SetToolTip($btnNew, 'Neue Sync-Aufgabe anlegen.')
@@ -725,7 +816,10 @@ function Show-Help {
     HelpH 'Nicht synchronisieren'
     HelpP 'Im Feld stehen Dateinamen oder Muster, getrennt mit Semikolon. * steht für beliebig viele Zeichen, ? für ein Zeichen. Die Muster gelten für Dateien und Ordnernamen in beiden Ordnern. Ausgeschlossenes wird weder kopiert noch gelöscht.'
     HelpB 'Beispiele' 'Thumbs.db;*.tmp;~$*;node_modules;*.bak'
+    HelpH 'Ordner abwählen'
+    HelpP 'Mit "Ordner wählen ..." siehst du beide Ordner als Baum nebeneinander. Entfernst du bei einem Ordner den Haken, wird er samt allen Unterordnern nicht synchronisiert (auf keiner Seite kopiert oder gelöscht). Der Haken gilt für beide Seiten. Neue Ordner, die später dazukommen, sind immer dabei, gespeichert werden nur die abgewählten. Ein abgewählter Ordner bleibt auch dann abgewählt, wenn er gelöscht und später neu angelegt wird; solche Einträge erscheinen grau mit "(nicht vorhanden)" und lassen sich durch Anhaken entfernen. "Alle wieder einschließen" setzt alle Haken zurück.'
     HelpH 'Löschen und Sicherheit'
+    HelpP 'Dateien werden zuerst unter einem Zwischennamen (.dirtoy-tmp) kopiert und erst am Ende umbenannt. Bricht ein Lauf ab oder schließt du das Fenster, bleibt die alte Datei im Ziel unverändert; übrig gebliebene Zwischendateien räumt DirToy beim nächsten Lauf auf. Mit "Abbrechen" stoppst du einen Lauf nach der aktuellen Datei.'
     HelpP 'Vor dem Löschen fragt das Tool nach. Gelöscht wird in den Papierkorb, bei Netzlaufwerken ohne Papierkorb aber endgültig. Schau dir deshalb bei "Synchronisieren" und "Echo" zuerst die Vorschau an. Ordner dürfen nicht identisch sein oder ineinander liegen. Ordner werden komplett mit allen Unterordnern gespiegelt, auch leere. Ein Ordner wird nur gelöscht, wenn er danach wirklich leer ist (ausgeschlossene Dateien darin verhindern das Löschen).'
     HelpH 'Zeitplan (automatisch)'
     HelpP 'Mit "Zeitplan ..." legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten oder bei der Anmeldung. Du kannst ihn dort jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen.'
@@ -744,7 +838,168 @@ function Show-Help {
     [void]$d.ShowDialog($form)
     $d.Dispose()
 }
-$editors = @($tbName, $tbA, $tbB, $cmb, $tbEx, $btnPrev, $btnRun, $btnDel, $btnSched)
+# ---- Ordnerbaum-Fenster: Ordner abwaehlen, die nicht synchronisiert werden sollen
+function Get-ParentPath([string]$p) {
+    $x = $p.TrimEnd('\'); $i = $x.LastIndexOf('\')
+    if ($i -lt 0) { return '' } else { return $x.Substring(0, $i + 1) }
+}
+function Test-ExistsAny([string]$rel) {
+    return ([System.IO.Directory]::Exists((Join-Path $script:fdRootA $rel)) -or [System.IO.Directory]::Exists((Join-Path $script:fdRootB $rel)))
+}
+function Test-EffExcluded([string]$path) {
+    foreach ($x in $script:fdSet) { if ($path.StartsWith($x, [StringComparison]::OrdinalIgnoreCase)) { return $true } }
+    return $false
+}
+function Test-AncExcluded([string]$path) {
+    foreach ($x in $script:fdSet) { if ($path.Length -gt $x.Length -and $path.StartsWith($x, [StringComparison]::OrdinalIgnoreCase)) { return $true } }
+    return $false
+}
+function New-TreeNodeFor([string]$text, [string]$path, [string]$kind, [string]$root) {
+    $n = New-Object System.Windows.Forms.TreeNode($text)
+    $n.Tag = @{ Path = $path; Kind = $kind; Root = $root; Loaded = ($kind -ne 'normal') }
+    if ($kind -eq 'normal') { [void]$n.Nodes.Add((New-Object System.Windows.Forms.TreeNode('...'))) }   # Platzhalter fuer Pfeil
+    return $n
+}
+function Fill-Nodes($coll, [string]$parentPath, [string]$root) {
+    $coll.Clear()
+    $abs = Join-Path $root $parentPath
+    try { $dirs = @((New-Object System.IO.DirectoryInfo $abs).GetDirectories() | Sort-Object Name) } catch { $dirs = @() }
+    foreach ($d in $dirs) {
+        if ($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+        $p = $parentPath + $d.Name + '\'
+        if (Test-Excluded $d.Name $script:fdPats) { [void]$coll.Add((New-TreeNodeFor ($d.Name + '   (durch Muster ausgeschlossen)') $p 'pattern' $root)) }
+        else { [void]$coll.Add((New-TreeNodeFor $d.Name $p 'normal' $root)) }
+    }
+    # abgewaehlte Ordner, die es nirgends mehr gibt
+    foreach ($x in @($script:fdSet | Sort-Object)) {
+        if (Test-ExistsAny $x) { continue }
+        $par = Get-ParentPath $x
+        $orphan = ($par -ne '') -and -not (Test-ExistsAny $par)
+        if ($parentPath -eq '' -and $orphan) { [void]$coll.Add((New-TreeNodeFor ($x.TrimEnd('\') + '   (nicht vorhanden)') $x 'missing' $root)) }
+        elseif ($par -eq $parentPath -and -not $orphan) {
+            $name = $x.TrimEnd('\').Substring($par.Length)
+            [void]$coll.Add((New-TreeNodeFor ($name + '   (nicht vorhanden)') $x 'missing' $root))
+        }
+    }
+}
+function Update-TreeChecks($nodes) {
+    foreach ($n in $nodes) {
+        $tag = $n.Tag
+        if ($null -eq $tag) { continue }
+        $excl = ($tag.Kind -ne 'normal') -or (Test-EffExcluded $tag.Path)
+        $n.Checked = -not $excl
+        $n.ForeColor = $(if ($excl) { $th.Muted } else { $th.Text })
+        if ($tag.Loaded -and $n.Nodes.Count -gt 0) { Update-TreeChecks $n.Nodes }
+    }
+}
+function Refresh-Trees {
+    $script:fdUpdating = $true
+    try { foreach ($tv in @($script:fdTvA, $script:fdTvB)) { Update-TreeChecks $tv.Nodes } }
+    finally { $script:fdUpdating = $false }
+    $script:fdCount.Text = "$($script:fdSet.Count) Ordner abgewählt"
+}
+function Remove-MissingIn($coll, [string]$path) {
+    for ($i = $coll.Count - 1; $i -ge 0; $i--) {
+        $n = $coll[$i]; $tag = $n.Tag
+        if ($null -eq $tag) { continue }
+        if ($tag.Kind -eq 'missing' -and $tag.Path -ieq $path) { $coll.RemoveAt($i) }
+        elseif ($tag.Loaded -and $n.Nodes.Count -gt 0) { Remove-MissingIn $n.Nodes $path }
+    }
+}
+function Show-FolderDialog($t) {
+    try {
+        $script:fdRootA = [System.IO.Path]::GetFullPath([string]$t.A).TrimEnd('\')
+        $script:fdRootB = [System.IO.Path]::GetFullPath([string]$t.B).TrimEnd('\')
+    } catch { $script:fdRootA = ''; $script:fdRootB = '' }
+    if (-not $t.A -or -not $t.B -or -not (Test-Path -LiteralPath $script:fdRootA -PathType Container) -or -not (Test-Path -LiteralPath $script:fdRootB -PathType Container)) {
+        [void][System.Windows.Forms.MessageBox]::Show('Bitte zuerst Ordner A und Ordner B angeben (beide müssen existieren).', 'Ordner wählen')
+        return
+    }
+    $script:fdTask = $t
+    $script:fdPats = Get-Patterns $t
+    $script:fdSet = Get-ExcludeDirs $t
+    $script:fdUpdating = $false
+
+    $d = New-Object System.Windows.Forms.Form
+    $script:fdForm = $d
+    $d.Text = 'Ordner auswählen'; $d.ClientSize = New-Object System.Drawing.Size(1000, 680); $d.StartPosition = 'CenterParent'
+    $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false; $d.ShowInTaskbar = $false
+    $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
+    $h = New-Object System.Windows.Forms.Label; $h.Text = 'Ordner auswählen'; $h.Font = $fBold; $h.AutoSize = $false; $h.TextAlign = 'MiddleLeft'
+    [void](Add-To $d $h 20 12 700 28)
+    [void](New-Label $d 20 40 960 'Haken entfernen = Ordner samt Unterordnern wird nicht synchronisiert. Neue Ordner sind standardmäßig dabei (Haken gesetzt).' $true)
+    [void](New-Label $d 20 76 470 ('A:  ' + $script:fdRootA) $true)
+    [void](New-Label $d 510 76 470 ('B:  ' + $script:fdRootB) $true)
+    $mk = {
+        param($x)
+        $tv = New-Object System.Windows.Forms.TreeView
+        $tv.CheckBoxes = $true; $tv.BorderStyle = 'FixedSingle'; $tv.BackColor = $th.Input; $tv.ForeColor = $th.Text; $tv.Font = $fNormal
+        $tv.ShowLines = $true; $tv.ItemHeight = 24; $tv.HideSelection = $false
+        [void](Add-To $d $tv $x 100 470 470)
+        return $tv
+    }
+    $script:fdTvA = & $mk 20
+    $script:fdTvB = & $mk 510
+    $script:fdHint = New-Label $d 20 580 960 '' $true
+    $script:fdCount = New-Label $d 20 604 500 '' $true
+    $bAll = New-Btn $d 20 634 210 34 'Alle wieder einschließen' $false $th.Surface
+    $bOk = New-Btn $d 770 634 100 34 'OK' $true $null
+    $bCancel = New-Btn $d 880 634 100 34 'Abbrechen' $false $th.Surface
+
+    $expand = {
+        param($s, $e)
+        $tag = $e.Node.Tag
+        if ($null -ne $tag -and -not $tag.Loaded) {
+            $tag.Loaded = $true
+            Fill-Nodes $e.Node.Nodes $tag.Path $tag.Root
+            Refresh-Trees
+        }
+    }
+    $script:fdTvA.Add_BeforeExpand($expand); $script:fdTvB.Add_BeforeExpand($expand)
+    $checked = {
+        param($s, $e)
+        if ($script:fdUpdating) { return }
+        $n = $e.Node; $tag = $n.Tag
+        if ($null -eq $tag) { return }
+        $script:fdHint.Text = ''
+        $revert = $false
+        if ($tag.Kind -eq 'pattern') { $revert = $true; $script:fdHint.Text = 'Dieser Ordner ist durch ein Muster im Ausschlussfeld ausgeschlossen.' }
+        elseif ($n.Checked -and (Test-AncExcluded $tag.Path)) { $revert = $true; $script:fdHint.Text = 'Ein übergeordneter Ordner ist abgewählt. Dort zuerst den Haken wieder setzen.' }
+        if ($revert) { $script:fdUpdating = $true; $n.Checked = -not $n.Checked; $script:fdUpdating = $false; return }
+        if ($n.Checked) {
+            [void]$script:fdSet.Remove($tag.Path)
+            if ($tag.Kind -eq 'missing') { Remove-MissingIn $script:fdTvA.Nodes $tag.Path; Remove-MissingIn $script:fdTvB.Nodes $tag.Path }
+        } else { [void]$script:fdSet.Add($tag.Path) }
+        Refresh-Trees
+    }
+    $script:fdTvA.Add_AfterCheck($checked); $script:fdTvB.Add_AfterCheck($checked)
+    $bAll.Add_Click({
+        $script:fdSet.Clear()
+        Fill-Nodes $script:fdTvA.Nodes '' $script:fdRootA; Fill-Nodes $script:fdTvB.Nodes '' $script:fdRootB
+        Refresh-Trees
+    })
+    $bOk.Add_Click({
+        $script:fdTask.ExcludeDirs = [string[]]@($script:fdSet | Sort-Object)
+        Save-Tasks
+        $script:fdForm.DialogResult = 'OK'
+    })
+    $bCancel.Add_Click({ $script:fdForm.DialogResult = 'Cancel' })
+    $d.Add_HandleCreated({
+        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($script:fdForm.Handle, 20, [ref]$v, 4) } catch { }
+    })
+
+    Fill-Nodes $script:fdTvA.Nodes '' $script:fdRootA
+    Fill-Nodes $script:fdTvB.Nodes '' $script:fdRootB
+    Refresh-Trees
+    [void]$d.ShowDialog($form)
+    $d.Dispose()
+}
+function Update-DirsButton {
+    if (-not $script:btnDirs) { return }
+    $n = if ($script:cur) { @($script:cur.ExcludeDirs | Where-Object { $_ }).Count } else { 0 }
+    $script:btnDirs.Text = $(if ($n -gt 0) { "Ordner wählen ($n)" } else { 'Ordner wählen ...' })
+}
+$editors = @($tbName, $tbA, $tbB, $cmb, $tbEx, $btnDirs, $btnPrev, $btnRun, $btnDel, $btnSched)
 
 function Refresh-List([int]$select) {
     $script:loading = $true
@@ -770,10 +1025,20 @@ function Show-Cur {
     $btnAll.Enabled = ($script:tasks.Count -gt 0)
     $script:loading = $false
     Update-SchedLabel
+    Update-DirsButton
 }
+$script:busy = $false
+$script:closeRequested = $false
 function Set-Busy([bool]$busy) {
-    foreach ($c in @($btnPrev, $btnRun, $btnAll, $btnNew, $btnDel, $btnSched, $lb)) { $c.Enabled = -not $busy }
-    if (-not $busy) { Show-Cur }
+    $script:busy = $busy
+    if ($busy) { $script:cancel = $false }
+    foreach ($c in @($btnPrev, $btnRun, $btnAll, $btnNew, $btnDel, $btnSched, $btnDirs, $lb)) { $c.Enabled = -not $busy }
+    $btnRun.Visible = -not $busy
+    $btnCancel.Visible = $busy; $btnCancel.Enabled = $busy; $btnCancel.Text = 'Abbrechen'
+    if (-not $busy) {
+        Show-Cur
+        if ($script:closeRequested) { $form.Close() }
+    }
 }
 
 $lb.Add_SelectedIndexChanged({ if (-not $script:loading) { Show-Cur } })
@@ -817,6 +1082,10 @@ $btnLog.Add_Click({
     if (Test-Path $script:logFile) { Start-Process notepad.exe -ArgumentList "`"$($script:logFile)`"" }
     else { [void][System.Windows.Forms.MessageBox]::Show('Es gibt noch kein Protokoll. Es entsteht beim ersten Sync-Lauf.', 'Protokoll') }
 })
+$btnDirs.Add_Click({
+    if (-not $script:cur) { return }
+    Show-FolderDialog $script:cur; Update-DirsButton
+})
 $btnSched.Add_Click({
     if (-not $script:cur) { return }
     Show-ScheduleDialog $script:cur; Update-SchedLabel
@@ -824,16 +1093,29 @@ $btnSched.Add_Click({
 $btnPrev.Add_Click({
     if (-not $script:cur) { return }
     $lv.Items.Clear(); Set-Busy $true
-    try { [void](Run-Task $script:cur $true) } finally { Set-Busy $false; $lbl.Text = 'Vorschau fertig.' }
+    try { [void](Run-Task $script:cur $true) } finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Vorschau fertig.' }) }
 })
 $btnRun.Add_Click({
     if (-not $script:cur) { return }
     $lv.Items.Clear(); Set-Busy $true
-    try { [void](Run-Task $script:cur $false) } finally { Set-Busy $false; $lbl.Text = 'Fertig.' }
+    try { [void](Run-Task $script:cur $false) } finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Fertig.' }) }
 })
 $btnAll.Add_Click({
     $lv.Items.Clear(); Set-Busy $true
-    try { foreach ($t in @($script:tasks)) { [void](Run-Task $t $false) } } finally { Set-Busy $false; $lbl.Text = 'Alle Aufgaben abgearbeitet.' }
+    try { foreach ($t in @($script:tasks)) { [void](Run-Task $t $false); if ($script:cancel) { break } } }
+    finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Alle Aufgaben abgearbeitet.' }) }
+})
+$btnCancel.Add_Click({
+    $script:cancel = $true; $btnCancel.Enabled = $false; $btnCancel.Text = 'Bricht ab ...'
+    $lbl.Text = 'Wird nach der aktuellen Datei abgebrochen ...'
+})
+$form.Add_FormClosing({
+    param($s, $e)
+    if ($script:busy) {
+        $q = "Es läuft noch ein Vorgang.`nJetzt abbrechen und beenden?`n`nDas Programm beendet sich nach der aktuellen Datei. Es bleiben keine halben Dateien zurück."
+        if ([System.Windows.Forms.MessageBox]::Show($q, 'DirToy', 'YesNo', 'Question') -eq 'Yes') { $script:cancel = $true; $script:closeRequested = $true }
+        $e.Cancel = $true
+    }
 })
 
 Refresh-List 0
