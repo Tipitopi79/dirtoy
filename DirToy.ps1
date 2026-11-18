@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.5.1'
+$script:version = '1.5.2'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -343,6 +343,32 @@ function Add-Log([string]$aktion, [string]$datei, [string]$status) {
 }
 function Pump { if (-not $NoGui) { [System.Windows.Forms.Application]::DoEvents() } }
 
+# Vollstaendige Vorschau als Textdatei (Zusammenfassung oben, dann jede Aktion); Rueckgabe: Pfad oder $null
+function Write-PreviewFile($t, $plan) {
+    try {
+        $path = Join-Path $script:dataDir 'vorschau.txt'
+        $byAct = [ordered]@{}; $byDir = @{}
+        foreach ($p in $plan) {
+            if ($byAct.Contains($p.Text)) { $byAct[$p.Text]++ } else { $byAct[$p.Text] = 1 }
+            $parts = $p.Rel.TrimEnd('\').Split('\')
+            $d = if ($parts.Count -ge 3) { $parts[0] + '\' + $parts[1] } elseif ($parts.Count -ge 2) { $parts[0] } else { '(oberste Ebene)' }
+            if ($byDir.ContainsKey($d)) { $byDir[$d]++ } else { $byDir[$d] = 1 }
+        }
+        $sw = New-Object System.IO.StreamWriter($path, $false, (New-Object System.Text.UTF8Encoding($true)))
+        try {
+            $sw.WriteLine("DirToy - Vorschau der Aufgabe '$($t.Name)' vom " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+            $sw.WriteLine("Ordner A: $($t.A)"); $sw.WriteLine("Ordner B: $($t.B)")
+            $sw.WriteLine("Insgesamt $($plan.Count) Aktion(en). Es wurde nichts verändert.")
+            $sw.WriteLine(''); $sw.WriteLine('ZUSAMMENFASSUNG NACH AKTION')
+            foreach ($k in $byAct.Keys) { $sw.WriteLine(('  {0,8}  {1}' -f $byAct[$k], $k)) }
+            $sw.WriteLine(''); $sw.WriteLine('BETROFFENE ORDNER (die 25 mit den meisten Aktionen)')
+            foreach ($e in ($byDir.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 25)) { $sw.WriteLine(('  {0,8}  {1}' -f $e.Value, $e.Key)) }
+            $sw.WriteLine(''); $sw.WriteLine('ALLE AKTIONEN'); $sw.WriteLine('Aktion | Pfad (relativ)')
+            foreach ($p in $plan) { $sw.WriteLine($p.Text + ' | ' + $p.Rel) }
+        } finally { $sw.Dispose() }
+        return $path
+    } catch { return $null }
+}
 function Run-Task($t, [bool]$preview) {
     $script:warn.Clear()
     $script:logOn = (-not $preview)
@@ -377,7 +403,11 @@ function Run-Task($t, [bool]$preview) {
             $n = 0
             foreach ($p in $plan) { $n++; if ($n -gt $uiMax) { break }; [void](Add-Log $p.Text $p.Rel 'geplant') }
         } finally { $script:bulk = $false; if ($script:lv) { $script:lv.EndUpdate() } }
-        if ($plan.Count -gt $uiMax) { [void](Add-Log "... und $($plan.Count - $uiMax) weitere Aktionen" "(Anzeige auf die ersten $uiMax begrenzt)" '') }
+        if ($plan.Count -gt $uiMax) {
+            $pf = Write-PreviewFile $t $plan
+            $it = Add-Log "... und $($plan.Count - $uiMax) weitere Aktionen" $(if ($pf) { '(Doppelklick: komplette Liste öffnen)' } else { "(Anzeige auf die ersten $uiMax begrenzt)" }) ''
+            if ($it -and $pf) { $it.Tag = $pf }
+        }
         [void](Add-Log "Aufgabe '$($t.Name)'" "Vorschau: $($plan.Count) Aktion(en), davon $dels Löschung(en)" '')
         return $null
     }
@@ -775,6 +805,12 @@ $lv.Add_DrawColumnHeader({
     [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.Header.Text.ToUpper(), $s.Font, $r, $script:th.Muted, $fl)
 })
 $lv.Add_DrawItem({ param($s, $e) })
+$lv.Add_DoubleClick({
+    if ($lv.SelectedItems.Count -gt 0) {
+        $f = $lv.SelectedItems[0].Tag
+        if ($f -is [string] -and $f.EndsWith('vorschau.txt') -and (Test-Path $f)) { Start-Process notepad.exe -ArgumentList "`"$f`"" }
+    }
+})
 $lv.Add_DrawSubItem({
     param($s, $e)
     $bg = if ($e.Item.Selected) { $script:th.SelBg } else { $script:th.Surface }
@@ -955,6 +991,8 @@ function Show-Help {
     HelpH 'Zeitplan (automatisch)'
     HelpP 'Mit "Zeitplan ..." legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten oder bei der Anmeldung. Du kannst ihn dort jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen.'
     HelpP 'Nach einem automatischen Lauf kann eine Windows-Meldung erscheinen: nie, wenn etwas passiert ist oder Fehler auftraten, oder nur bei Fehlern.'
+    HelpH 'Große Vorschau'
+    HelpP 'Die Liste zeigt höchstens 2000 Zeilen. Gibt es mehr Aktionen, steht am Ende die Zeile "... und N weitere Aktionen": Ein Doppelklick darauf öffnet die komplette Vorschau in Notepad (DirToy-Daten\vorschau.txt) mit Zusammenfassung nach Aktion, den am stärksten betroffenen Ordnern und allen Aktionen. Bei einem echten Lauf werden immer alle Aktionen ausgeführt und im Protokoll festgehalten.'
     HelpH 'Protokoll'
     HelpP 'Die Liste unten zeigt den aktuellen Lauf. Alle echten Läufe, manuell und automatisch, stehen zusätzlich mit Uhrzeit in DirToy-Daten\sync.log. Der Button "Protokoll" öffnet diese Datei.'
     HelpH 'Design'

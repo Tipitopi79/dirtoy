@@ -13,7 +13,7 @@ Geschrieben in PowerShell (WinForms), ohne Installation lauffähig.
 - **Sicheres Kopieren**: Dateien werden erst als Zwischendatei (`.dirtoy-tmp`) geschrieben und am Ende umbenannt – bei Abbruch oder Absturz bleibt das Original im Ziel unverändert. Mit **Abbrechen** stoppt ein Lauf nach der aktuellen Datei, auch beim Schließen des Fensters.
 - **Ordnerbaum zum Abwählen**: beide Ordner nebeneinander als Baum, Haken entfernen = Ordner samt Unterordnern wird nicht synchronisiert. Neue Ordner sind standardmäßig dabei, gespeichert werden nur die abgewählten
 - **Ausschlussfeld**: Dateinamen und Muster mit `;` getrennt, z. B. `Thumbs.db;*.tmp;node_modules`
-- **Vorschau** zeigt, was passieren würde, ohne etwas zu verändern
+- **Vorschau** zeigt, was passieren würde, ohne etwas zu verändern. Bei sehr vielen Aktionen (mehr als 2000) öffnet ein Doppelklick auf die letzte Zeile die komplette Liste mit Zusammenfassung als Textdatei
 - **Fortschrittsbalken** und **Protokoll** (Liste im Fenster und `sync.log`)
 - **Zeitpläne** direkt im Tool: legt Einträge im Windows-Aufgabenplaner an, ändert und entfernt sie
 - Windows-**Benachrichtigung** nach automatischen Läufen
