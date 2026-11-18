@@ -9,6 +9,7 @@ Geschrieben in PowerShell (WinForms), ohne Installation lauffähig.
 
 - Beliebig viele **Sync-Aufgaben** mit je zwei Ordnern (A und B)
 - **Drei Modi**: Synchronisieren (beidseitig), Echo (A → B, B wird wie A), Beitragen (A → B, ohne Löschen)
+- **Ordner 1:1 identisch**: alle Unterordner werden rekursiv gespiegelt, auch leere; angelegt und (außer im Modus *Beitragen*) auch gelöscht
 - **Ausschlussfeld**: Dateinamen und Muster mit `;` getrennt, z. B. `Thumbs.db;*.tmp;node_modules`
 - **Vorschau** zeigt, was passieren würde, ohne etwas zu verändern
 - **Fortschrittsbalken** und **Protokoll** (Liste im Fenster und `sync.log`)

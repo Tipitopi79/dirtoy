@@ -17,7 +17,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.0.0'
+$script:version = '1.1.0'
 $script:dataDir  = if ($env:DIRTOY_DATA) { $env:DIRTOY_DATA } else { Join-Path $PSScriptRoot 'DirToy-Daten' }
 $script:stateDir = Join-Path $script:dataDir 'state'
 $script:taskFile = Join-Path $script:dataDir 'aufgaben.json'
@@ -95,14 +95,16 @@ function Test-Excluded([string]$name, $pats) {
     foreach ($p in $pats) { if ($name -like $p) { return $true } }
     return $false
 }
-function Scan-Dir([System.IO.DirectoryInfo]$dir, [string]$rel, $pats, $dict) {
+function New-DirSet { New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase) }
+function Scan-Dir([System.IO.DirectoryInfo]$dir, [string]$rel, $pats, $dict, $dirs) {
     try { $entries = $dir.GetFileSystemInfos() }
     catch { $script:warn.Add("$($dir.FullName): $($_.Exception.Message)"); return }
     foreach ($e in $entries) {
         if (Test-Excluded $e.Name $pats) { continue }
         if ($e -is [System.IO.DirectoryInfo]) {
             if ($e.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
-            Scan-Dir $e ($rel + $e.Name + '\') $pats $dict
+            if ($dirs) { [void]$dirs.Add($rel + $e.Name + '\') }
+            Scan-Dir $e ($rel + $e.Name + '\') $pats $dict $dirs
         } else {
             $dict[$rel + $e.Name] = $e
         }
@@ -121,9 +123,9 @@ function Build-Plan($t) {
         throw 'Die Ordner dürfen nicht identisch sein oder ineinander liegen.'
     }
     $pats = Get-Patterns $t
-    $da = New-Dict; $db = New-Dict
-    Scan-Dir (New-Object System.IO.DirectoryInfo $rootA) '' $pats $da
-    Scan-Dir (New-Object System.IO.DirectoryInfo $rootB) '' $pats $db
+    $da = New-Dict; $db = New-Dict; $dsA = New-DirSet; $dsB = New-DirSet
+    Scan-Dir (New-Object System.IO.DirectoryInfo $rootA) '' $pats $da $dsA
+    Scan-Dir (New-Object System.IO.DirectoryInfo $rootB) '' $pats $db $dsB
     $state = Get-State $t.Id
     $mode = [int]$t.Mode
 
@@ -169,7 +171,41 @@ function Build-Plan($t) {
             }
         }
     }
-    return [pscustomobject]@{ Plan = $plan; A = $rootA; B = $rootB; Pats = $pats }
+
+    # ---- Ordner (auch leere): anlegen vor den Dateien, loeschen nach den Dateien (tiefste zuerst)
+    $implicit = New-DirSet   # Ordner, die durch kopierte Dateien ohnehin entstehen bzw. noch gebraucht werden
+    foreach ($p in $plan) {
+        if ($p.Typ -ne 'Copy') { continue }
+        $parts = $p.Rel.Split('\'); $acc = ''
+        for ($k = 0; $k -lt $parts.Length - 1; $k++) { $acc += $parts[$k] + '\'; [void]$implicit.Add($acc) }
+    }
+    $dkeys = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($k in $dsA) { [void]$dkeys.Add($k) }
+    foreach ($k in $dsB) { [void]$dkeys.Add($k) }
+    $mk = New-Object System.Collections.Generic.List[object]
+    $rm = New-Object System.Collections.Generic.List[object]
+    foreach ($dk in $dkeys) {
+        $inA = $dsA.Contains($dk); $inB = $dsB.Contains($dk)
+        if ($inA -and $inB) { continue }
+        if ($implicit.Contains($dk)) { continue }
+        $pa = Join-Path $rootA $dk; $pb = Join-Path $rootB $dk
+        if ($inA) {
+            if ($mode -eq 0 -and $state.Contains($dk)) { $rm.Add([pscustomobject]@{ Typ = 'RmDir'; Text = 'In A Ordner löschen (in B gelöscht)'; Rel = $dk; Src = $pa; Dst = $null }) }
+            else { $mk.Add([pscustomobject]@{ Typ = 'MkDir'; Text = 'A -> B Ordner anlegen'; Rel = $dk; Src = $null; Dst = $pb }) }
+        } else {
+            switch ($mode) {
+                0 { if ($state.Contains($dk)) { $rm.Add([pscustomobject]@{ Typ = 'RmDir'; Text = 'In B Ordner löschen (in A gelöscht)'; Rel = $dk; Src = $pb; Dst = $null }) }
+                    else { $mk.Add([pscustomobject]@{ Typ = 'MkDir'; Text = 'B -> A Ordner anlegen'; Rel = $dk; Src = $null; Dst = $pa }) } }
+                1 { $rm.Add([pscustomobject]@{ Typ = 'RmDir'; Text = 'In B Ordner löschen (nicht in A vorhanden)'; Rel = $dk; Src = $pb; Dst = $null }) }
+                2 { }
+            }
+        }
+    }
+    $final = New-Object System.Collections.Generic.List[object]
+    $final.AddRange($mk)
+    $final.AddRange($plan)
+    foreach ($x in ($rm | Sort-Object { $_.Rel.Length } -Descending)) { $final.Add($x) }
+    return [pscustomobject]@{ Plan = $final; A = $rootA; B = $rootB; Pats = $pats }
 }
 
 # ---------------------------------------------------------------- Plan ausführen
@@ -184,10 +220,10 @@ function Delete-One($path) {
     [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($path, 'OnlyErrorDialogs', 'SendToRecycleBin')
 }
 function Update-State($t, $r) {
-    $da = New-Dict; $db = New-Dict
-    Scan-Dir (New-Object System.IO.DirectoryInfo $r.A) '' $r.Pats $da
-    Scan-Dir (New-Object System.IO.DirectoryInfo $r.B) '' $r.Pats $db
-    $both = @($da.Keys | Where-Object { $db.ContainsKey($_) })
+    $da = New-Dict; $db = New-Dict; $dsA = New-DirSet; $dsB = New-DirSet
+    Scan-Dir (New-Object System.IO.DirectoryInfo $r.A) '' $r.Pats $da $dsA
+    Scan-Dir (New-Object System.IO.DirectoryInfo $r.B) '' $r.Pats $db $dsB
+    $both = @($da.Keys | Where-Object { $db.ContainsKey($_) }) + @($dsA | Where-Object { $dsB.Contains($_) })
     Save-State $t.Id $both
 }
 
@@ -227,7 +263,7 @@ function Run-Task($t, [bool]$preview) {
     catch { [void](Add-Log "Aufgabe '$($t.Name)'" '' "FEHLER: $($_.Exception.Message)"); return $null }
     foreach ($w in $script:warn) { [void](Add-Log 'Warnung' $w 'übersprungen') }
     $plan = $r.Plan
-    $dels = @($plan | Where-Object { $_.Typ -eq 'Delete' }).Count
+    $dels = @($plan | Where-Object { $_.Typ -eq 'Delete' -or $_.Typ -eq 'RmDir' }).Count
     if ($plan.Count -eq 0) { if (-not $preview) { try { Update-State $t $r } catch { } }; [void](Add-Log "Aufgabe '$($t.Name)'" 'Bereits synchron - nichts zu tun.' ''); return @{ Copied = 0; Deleted = 0; Errors = 0 } }
 
     if ($preview) {
@@ -237,7 +273,7 @@ function Run-Task($t, [bool]$preview) {
     }
     if ($dels -gt 0 -and -not $NoGui) {
         $ans = [System.Windows.Forms.MessageBox]::Show(
-            "Aufgabe '$($t.Name)': $dels Datei(en) werden gelöscht (Papierkorb, sofern möglich).`nFortfahren?",
+            "Aufgabe '$($t.Name)': $dels Datei(en)/Ordner werden gelöscht (Papierkorb, sofern möglich).`nFortfahren?",
             'Löschen bestätigen', 'YesNo', 'Warning')
         if ($ans -ne 'Yes') { [void](Add-Log "Aufgabe '$($t.Name)'" '' 'Abgebrochen.'); return $null }
     }
@@ -248,12 +284,22 @@ function Run-Task($t, [bool]$preview) {
         Set-Progress ($i / $plan.Count)
         $it = Add-Log $p.Text $p.Rel '...'
         try {
+            $st = 'OK'
             switch ($p.Typ) {
                 'Copy'     { Copy-One $p.Src $p.Dst; $copied++ }
                 'Delete'   { Delete-One $p.Src; $deleted++ }
-                'Conflict' { }
+                'MkDir'    { [void][System.IO.Directory]::CreateDirectory($p.Dst); $copied++ }
+                'RmDir'    {
+                    if (-not (Test-Path -LiteralPath $p.Src -PathType Container)) { $st = 'OK' }
+                    else {
+                        $en = [System.IO.Directory]::EnumerateFileSystemEntries($p.Src).GetEnumerator()
+                        $hasAny = $en.MoveNext(); $en.Dispose()
+                        if ($hasAny) { $st = 'übersprungen (nicht leer)' }
+                        else { [System.IO.Directory]::Delete($p.Src); $deleted++ }
+                    }
+                }
+                'Conflict' { $st = 'übersprungen' }
             }
-            $st = if ($p.Typ -eq 'Conflict') { 'übersprungen' } else { 'OK' }
             if ($script:logOn) { Write-LogLine $p.Text $p.Rel $st }
             if ($it) { $it.SubItems[2].Text = $st; $it.ForeColor = (Get-StatusColor $st) }
         } catch {
@@ -374,7 +420,7 @@ function Get-StatusColor([string]$st) {
     if (-not $script:th) { return $null }
     if ($st -like 'FEHLER*') { return $script:th.Err }
     if ($st -eq 'OK') { return $script:th.Ok }
-    if ($st -eq 'geplant' -or $st -eq 'übersprungen') { return $script:th.Muted }
+    if ($st -eq 'geplant' -or $st -like 'übersprungen*') { return $script:th.Muted }
     return $script:th.Text
 }
 
@@ -680,7 +726,7 @@ function Show-Help {
     HelpP 'Im Feld stehen Dateinamen oder Muster, getrennt mit Semikolon. * steht für beliebig viele Zeichen, ? für ein Zeichen. Die Muster gelten für Dateien und Ordnernamen in beiden Ordnern. Ausgeschlossenes wird weder kopiert noch gelöscht.'
     HelpB 'Beispiele' 'Thumbs.db;*.tmp;~$*;node_modules;*.bak'
     HelpH 'Löschen und Sicherheit'
-    HelpP 'Vor dem Löschen fragt das Tool nach. Gelöscht wird in den Papierkorb, bei Netzlaufwerken ohne Papierkorb aber endgültig. Schau dir deshalb bei "Synchronisieren" und "Echo" zuerst die Vorschau an. Ordner dürfen nicht identisch sein oder ineinander liegen. Leere Ordner werden nicht synchronisiert, nur Dateien.'
+    HelpP 'Vor dem Löschen fragt das Tool nach. Gelöscht wird in den Papierkorb, bei Netzlaufwerken ohne Papierkorb aber endgültig. Schau dir deshalb bei "Synchronisieren" und "Echo" zuerst die Vorschau an. Ordner dürfen nicht identisch sein oder ineinander liegen. Ordner werden komplett mit allen Unterordnern gespiegelt, auch leere. Ein Ordner wird nur gelöscht, wenn er danach wirklich leer ist (ausgeschlossene Dateien darin verhindern das Löschen).'
     HelpH 'Zeitplan (automatisch)'
     HelpP 'Mit "Zeitplan ..." legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten oder bei der Anmeldung. Du kannst ihn dort jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen.'
     HelpP 'Nach einem automatischen Lauf kann eine Windows-Meldung erscheinen: nie, wenn etwas passiert ist oder Fehler auftraten, oder nur bei Fehlern.'
