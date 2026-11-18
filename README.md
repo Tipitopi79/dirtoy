@@ -26,10 +26,10 @@ Windows 10 oder 11 (Windows PowerShell 5.1 ist enthalten). Keine Installation n�
 
 ## Start
 
-1. `DirToy.ps1` und `DirToy.vbs` in einen Ordner legen.
-2. Doppelklick auf `DirToy.vbs` (startet ohne schwarzes Fenster).
+1. `DirToy.ps1` und `DirToy.cmd` in einen Ordner legen (`DirToy.ico` ist optional).
+2. Doppelklick auf `DirToy.cmd`. Es ist eine einfache Textdatei mit einer Zeile und startet DirToy ohne dauerhaftes Konsolenfenster.
 
-Das Programm-Icon ist in `DirToy.ps1` eingebaut (Fenster, Taskleiste, Benachrichtigung). Für eine Verknüpfung auf dem Desktop: Rechtsklick auf `DirToy.vbs` → Verknüpfung erstellen → Eigenschaften → Anderes Symbol → `DirToy.ico` wählen (liegt im Ordner, optional).
+Das Programm-Icon ist in `DirToy.ps1` eingebaut (Fenster, Taskleiste, Benachrichtigung). Beim allerersten Start fragt DirToy, ob eine Verknüpfung mit Icon auf dem Desktop angelegt werden soll (später jederzeit über den Button **Desktop-Verknüpfung** im Hilfe-Fenster). Sie startet DirToy ganz ohne aufblitzendes Fenster (über `conhost.exe --headless`, ein Windows-Bordmittel). Beim Doppelklick auf `DirToy.cmd` blitzt dagegen kurz ein Fenster auf, das lässt sich bei Batch-Dateien nicht vermeiden.
 
 Beim ersten Start wird der Ordner `DirToy-Daten` angelegt (Aufgaben, Zeitpläne, Protokoll).
 Wurde die ZIP-Datei aus dem Internet geladen, ggf. vorher in den Dateieigenschaften "Zulassen" anhaken.

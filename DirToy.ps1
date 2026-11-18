@@ -1,6 +1,6 @@
 ﻿param([switch]$NoGui, [string]$Task, [switch]$All)
 # DirToy - grafisches Ordner-Synchronisationstool (Vorbild: SyncToy)
-# Start: DirToy.bat (Doppelklick)
+# Start: DirToy.cmd (Doppelklick)
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBasic, System.Net.Http
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.5.3'
+$script:version = '1.5.4'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -1017,6 +1017,12 @@ function Show-Help {
     HelpH 'Wo liegen meine Daten?'
     HelpP 'Aufgaben und Zeitpläne stehen in DirToy-Daten\aufgaben.json neben dem Programm. Verschiebst du DirToy.ps1, speichere die Zeitpläne danach einmal neu. Bei Startproblemen steht der Grund in DirToy-Daten\fehler.log.'
     $rb.SelectionStart = 0; $rb.ScrollToCaret()
+    $bs = New-Btn $d 24 584 200 36 'Desktop-Verknüpfung' $false $th.Surface; $bs.Anchor = $A_BL
+    $bs.Add_Click({
+        $p = New-DesktopShortcut
+        if ($p) { [void][System.Windows.Forms.MessageBox]::Show("Die Verknüpfung wurde auf dem Desktop angelegt:`n$p", 'DirToy', 'OK', 'Information') }
+        else { [void][System.Windows.Forms.MessageBox]::Show('Die Verknüpfung konnte nicht angelegt werden.', 'DirToy', 'OK', 'Warning') }
+    })
     $bc = New-Btn $d 556 584 100 36 'Schließen' $true $null; $bc.Anchor = $A_BR
     $script:helpClose = $bc
     $bc.Add_Click({ $script:helpClose.FindForm().Close() })
@@ -1081,6 +1087,41 @@ function Show-UpdateDialog($info, [string]$mode) {
     $d.Dispose()
     return $script:updAction
 }
+# Startet DirToy neu (Design-Wechsel, Update); der Aufrufer schliesst danach das Fenster
+function Restart-DirToy {
+    $c = Get-LaunchCommand
+    Start-Process -FilePath $c.File -ArgumentList $c.Args
+}
+# Startbefehl ohne aufblitzendes Konsolenfenster: conhost.exe --headless (Windows 10 ab 2004 / 11), sonst PowerShell direkt
+function Get-LaunchCommand {
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $psArgs = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$($script:scriptPath)`""
+    $ch = Join-Path $env:SystemRoot 'System32\conhost.exe'
+    if ((Test-Path $ch) -and [Environment]::OSVersion.Version.Build -ge 19041) {
+        return @{ File = $ch; Args = "--headless `"$ps`" $psArgs" }
+    }
+    return @{ File = $ps; Args = $psArgs }
+}
+# Legt eine Verknuepfung auf dem Desktop an (startet DirToy ohne Konsolenfenster-Dauerzustand)
+function Get-DesktopDir { if ($env:DIRTOY_DESKTOP) { return $env:DIRTOY_DESKTOP } else { return [Environment]::GetFolderPath('Desktop') } }
+function New-DesktopShortcut {
+    try {
+        $dir = Split-Path $script:scriptPath
+        $lnk = Join-Path (Get-DesktopDir) 'DirToy.lnk'
+        $ws = New-Object -ComObject WScript.Shell
+        $sc = $ws.CreateShortcut($lnk)
+        $c = Get-LaunchCommand
+        $sc.TargetPath = $c.File
+        $sc.Arguments = $c.Args
+        $sc.WorkingDirectory = $dir
+        $sc.WindowStyle = 7
+        $sc.Description = 'DirToy - Ordner synchron halten'
+        $ico = Join-Path $dir 'DirToy.ico'
+        if (Test-Path $ico) { $sc.IconLocation = $ico }
+        $sc.Save()
+        return $lnk
+    } catch { return $null }
+}
 function Do-UpdateAction($info, [string]$action) {
     if ($action -eq 'web') { Start-Process $info.Url; return }
     if ($action -ne 'install') { return }
@@ -1097,9 +1138,8 @@ function Do-UpdateAction($info, [string]$action) {
     }
     $form.Cursor = 'Default'
     Save-Tasks
-    $vbs = Join-Path $PSScriptRoot 'DirToy.vbs'
-    if (Test-Path $vbs) { Start-Process wscript.exe -ArgumentList "`"$vbs`"" }
-    else { Start-Process powershell.exe -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$($script:scriptPath)`"" }
+    Restart-DirToy
+
     $form.Close()
 }
 # Hintergrund-Pruefung: HttpClient-Task, ein Timer fragt das Ergebnis ab (Fenster bleibt bedienbar)
@@ -1379,9 +1419,8 @@ $btnTheme.Add_Click({
     Set-ThemeSetting $next
     Save-Tasks
     # Design wird beim Aufbau des Fensters gesetzt: Programm kurz neu starten
-    $vbs = Join-Path $PSScriptRoot 'DirToy.vbs'
-    if (Test-Path $vbs) { Start-Process wscript.exe -ArgumentList "`"$vbs`"" }
-    else { Start-Process powershell.exe -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$($script:scriptPath)`"" }
+    Restart-DirToy
+
     $form.Close()
 })
 $btnLog.Add_Click({
@@ -1426,6 +1465,18 @@ $form.Add_FormClosing({
 
 Refresh-List 0
 $form.Add_Shown({
+    # Beim allerersten Start einmal anbieten, eine Desktop-Verknuepfung anzulegen (startet ohne aufblitzendes Fenster)
+    if (-not [bool](Get-Setting 'ShortcutAsked' $false)) {
+        Set-Setting 'ShortcutAsked' $true
+        $lnkPath = Join-Path (Get-DesktopDir) 'DirToy.lnk'
+        if (-not (Test-Path $lnkPath)) {
+            $q = "Willkommen bei DirToy!`n`nSoll eine Verknüpfung mit Icon auf dem Desktop angelegt werden?`nDamit startet DirToy künftig ohne aufblitzendes Fenster.`n`n(Später jederzeit über Hilfe → Desktop-Verknüpfung.)"
+            if ([System.Windows.Forms.MessageBox]::Show($q, 'DirToy', 'YesNo', 'Question') -eq 'Yes') {
+                $made = New-DesktopShortcut
+                if (-not $made) { [void][System.Windows.Forms.MessageBox]::Show('Die Verknüpfung konnte nicht angelegt werden.', 'DirToy', 'OK', 'Warning') }
+            }
+        }
+    }
     if ([bool](Get-Setting 'UpdateCheck' $true)) { Start-UpdateCheck $false }
     if ($script:tasks.Count -eq 0) { $btnNew.PerformClick() }
 })
