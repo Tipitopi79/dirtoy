@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.5.4'
+$script:version = '1.6.0'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -72,8 +72,8 @@ function Load-Tasks {
         }
         if ($raw -and $raw.Trim()) { $items = ConvertFrom-Json $raw; $script:tasks = @(foreach ($it in $items) { $it })
         foreach ($t in $script:tasks) {
-            foreach ($pn in @('Schedule', 'SchedName')) {
-                if (-not $t.PSObject.Properties[$pn]) { Add-Member -InputObject $t -NotePropertyName $pn -NotePropertyValue $(if ($pn -eq 'SchedName') { '' } else { $null }) }
+            foreach ($pn in @('Schedule', 'SchedName', 'AutoLnk')) {
+                if (-not $t.PSObject.Properties[$pn]) { Add-Member -InputObject $t -NotePropertyName $pn -NotePropertyValue $(if ($pn -ne 'Schedule') { '' } else { $null }) }
             }
             if (-not $t.PSObject.Properties['ExcludeDirs']) { Add-Member -InputObject $t -NotePropertyName 'ExcludeDirs' -NotePropertyValue ([string[]]@()) }
         } }
@@ -86,7 +86,7 @@ function Save-Tasks {
     Move-Item -Path $tmp -Destination $script:taskFile -Force
 }
 function New-Task([string]$name) {
-    [pscustomobject]@{ Id = [guid]::NewGuid().ToString('N'); Name = $name; A = ''; B = ''; Mode = 0; Exclude = 'Thumbs.db;desktop.ini;~$*;*.tmp'; ExcludeDirs = [string[]]@(); Schedule = $null; SchedName = '' }
+    [pscustomobject]@{ Id = [guid]::NewGuid().ToString('N'); Name = $name; A = ''; B = ''; Mode = 0; Exclude = 'Thumbs.db;desktop.ini;~$*;*.tmp'; ExcludeDirs = [string[]]@(); Schedule = $null; SchedName = ''; AutoLnk = '' }
 }
 
 # ---------------------------------------------------------------- Zustand (zum Erkennen von Löschungen)
@@ -494,12 +494,29 @@ $script:schedPath = '\DirToy\'
 function Get-SchedText($s) {
     if (-not $s) { return 'Kein Zeitplan' }
     $dn = @{ Monday='Mo'; Tuesday='Di'; Wednesday='Mi'; Thursday='Do'; Friday='Fr'; Saturday='Sa'; Sunday='So' }
+    $rep = if ([bool]$s.Repeat -and [int]$s.Type -le 1) { ", dann alle $($s.RepMinutes) Min. für $($s.RepHours) Std." } else { '' }
     switch ([int]$s.Type) {
-        0 { "täglich um $($s.Time)" }
-        1 { 'wöchentlich ' + ((@($s.Days) | ForEach-Object { $dn[[string]$_] }) -join ',') + " um $($s.Time)" }
+        0 { "täglich um $($s.Time)$rep" }
+        1 { 'wöchentlich ' + ((@($s.Days) | ForEach-Object { $dn[[string]$_] }) -join ',') + " um $($s.Time)$rep" }
         2 { "alle $($s.Minutes) Minuten" }
         3 { 'bei Anmeldung' }
     }
+}
+# Autostart-Verknuepfung (Notloesung ohne Aufgabenplaner) entfernen
+function Remove-AutoLnk($t) {
+    if ($t.AutoLnk) { Remove-Item -LiteralPath ([string]$t.AutoLnk) -Force -ErrorAction SilentlyContinue }
+    $t.AutoLnk = ''
+}
+# Liest die Aufgabe nach dem Anlegen zurueck und prueft sie; liefert $null (alles in Ordnung) oder einen Fehlertext
+function Test-SchedRegistered([string]$name, [string]$id, [bool]$rep) {
+    try { $st = Get-ScheduledTask -TaskPath $script:schedPath -TaskName $name -ErrorAction Stop }
+    catch { return 'Die Aufgabe ist nach dem Anlegen im Windows-Aufgabenplaner nicht zu finden.' }
+    $a = @($st.Actions)
+    if ($a.Count -eq 0 -or ([string]$a[0].Arguments) -notlike "*$id*") { return 'Die angelegte Aufgabe enthält nicht den erwarteten Startbefehl.' }
+    $tr = @($st.Triggers)
+    if ($tr.Count -eq 0) { return 'Die angelegte Aufgabe hat keinen Auslöser (Zeitpunkt).' }
+    if ($rep -and -not [string]$tr[0].Repetition.Interval) { return 'Die Wiederholung wurde nicht übernommen.' }
+    return $null
 }
 function Get-SchedInfo($t) {
     if (-not $t.SchedName) { return $null }
@@ -514,28 +531,62 @@ function Unregister-Sched($t) {
         Unregister-ScheduledTask -TaskPath $script:schedPath -TaskName $t.SchedName -Confirm:$false -ErrorAction SilentlyContinue
     }
     $t.SchedName = ''
+    Remove-AutoLnk $t
 }
-function Register-Sched($t) {
-    $s = $t.Schedule
+# Legt den Zeitplan $s fuer die Aufgabe an, liest ihn zurueck und prueft ihn. Bei Fehlern wird eine Ausnahme geworfen
+# und die Aufgabe ($t) bleibt unveraendert; nur bei Erfolg werden Schedule/SchedName gesetzt.
+function Register-Sched($t, $s) {
     $name = 'DirToy - ' + (([string]$t.Name -replace '[\\/:*?"<>|]', '_').Trim())
-    if ($t.SchedName -and $t.SchedName -ne $name) {
-        Unregister-ScheduledTask -TaskPath $script:schedPath -TaskName $t.SchedName -Confirm:$false -ErrorAction SilentlyContinue
-    }
     $user = "$env:USERDOMAIN\$env:USERNAME"
     $arg = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$($script:scriptPath)`" -Task `"$($t.Id)`""
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
     $hm = ([string]$s.Time).Split(':')
     $at = [datetime]::Today.AddHours([int]$hm[0]).AddMinutes([int]$hm[1])
+    $rep = ([bool]$s.Repeat -and [int]$s.Type -le 1)
     switch ([int]$s.Type) {
         0 { $trg = New-ScheduledTaskTrigger -Daily -At $at }
         1 { $trg = New-ScheduledTaskTrigger -Weekly -DaysOfWeek ([string[]]@($s.Days)) -At $at }
         2 { $trg = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes ([int]$s.Minutes)) -RepetitionDuration (New-TimeSpan -Days 3650) }
         3 { $trg = New-ScheduledTaskTrigger -AtLogOn -User $user }
     }
-    $set = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 12)
+    if ($rep) {
+        # Tages-/Wochen-Trigger kennt in PowerShell 5.1 keine Wiederholung: sie wird von einem Einmal-Trigger uebernommen
+        $r = New-ScheduledTaskTrigger -Once -At $at -RepetitionInterval (New-TimeSpan -Minutes ([int]$s.RepMinutes)) -RepetitionDuration (New-TimeSpan -Hours ([int]$s.RepHours))
+        $trg.Repetition = $r.Repetition
+    }
+    # Wiederholungen/Intervalle werden nicht nachgeholt; Zeitplaene mit fester Uhrzeit und Anmeldung schon
+    $noCatchUp = ($rep -or [int]$s.Type -eq 2)
+    $sp = @{ AllowStartIfOnBatteries = $true; DontStopIfGoingOnBatteries = $true; MultipleInstances = 'IgnoreNew'; ExecutionTimeLimit = (New-TimeSpan -Hours 12) }
+    if (-not $noCatchUp) { $sp.StartWhenAvailable = $true }
+    $set = New-ScheduledTaskSettingsSet @sp
     $pri = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
-    [void](Register-ScheduledTask -TaskName $name -TaskPath $script:schedPath -Action $action -Trigger $trg -Settings $set -Principal $pri -Description "DirToy: $($t.Name)" -Force)
+    [void](Register-ScheduledTask -TaskName $name -TaskPath $script:schedPath -Action $action -Trigger $trg -Settings $set -Principal $pri -Description "DirToy: $($t.Name)" -Force -ErrorAction Stop)
+    $bad = Test-SchedRegistered $name ([string]$t.Id) $rep
+    if ($bad) {
+        Unregister-ScheduledTask -TaskPath $script:schedPath -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+        throw $bad
+    }
+    if ($t.SchedName -and $t.SchedName -ne $name) {
+        Unregister-ScheduledTask -TaskPath $script:schedPath -TaskName $t.SchedName -Confirm:$false -ErrorAction SilentlyContinue
+    }
     $t.SchedName = $name
+    $t.Schedule = $s
+    Remove-AutoLnk $t
+}
+# Fertiger schtasks-Befehl (fuer die Eingabeaufforderung) zum manuellen Anlegen
+function Get-SchtasksCommand($t, $s) {
+    $name = 'DirToy - ' + (([string]$t.Name -replace '[\\/:*?"<>|]', '_').Trim())
+    $tr = "powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File \`"$($script:scriptPath)\`" -Task $($t.Id)"
+    $c = "schtasks /Create /TN `"$name`" /TR `"$tr`" /F"
+    $dm = @{ Monday='MON'; Tuesday='TUE'; Wednesday='WED'; Thursday='THU'; Friday='FRI'; Saturday='SAT'; Sunday='SUN' }
+    switch ([int]$s.Type) {
+        0 { $c += " /SC DAILY /ST $($s.Time)" }
+        1 { $c += " /SC WEEKLY /D " + ((@($s.Days) | ForEach-Object { $dm[[string]$_] }) -join ',') + " /ST $($s.Time)" }
+        2 { $c += " /SC MINUTE /MO $([int]$s.Minutes)" }
+        3 { $c += ' /SC ONLOGON' }
+    }
+    if ([bool]$s.Repeat -and [int]$s.Type -le 1) { $c += " /RI $([int]$s.RepMinutes) /DU {0:00}:00" -f [int]$s.RepHours }
+    return $c
 }
 # Programm-Icon (64 px, PNG als Base64; die Mehrgroessen-Datei DirToy.ico liegt fuer Verknuepfungen daneben)
 $script:iconB64 = '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'
@@ -875,10 +926,67 @@ $form.Add_HandleCreated({
     try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($form.Handle, 20, [ref]$v, 4) } catch { }
 })
 
+# ---- Anleitung, wenn der Zeitplan nicht angelegt werden konnte (z. B. ohne Admin-Rechte)
+function Show-ManualSchedDialog($t, $s, [string]$err, $owner) {
+    $cmd = Get-SchtasksCommand $t $s
+    $name = 'DirToy - ' + (([string]$t.Name -replace '[\\/:*?"<>|]', '_').Trim())
+    $psArgs = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$($script:scriptPath)`" -Task `"$($t.Id)`""
+    $wann = Get-SchedText $s
+    $txt = @(
+        'Der Zeitplan konnte NICHT im Windows-Aufgabenplaner angelegt werden. DirToy hat daher nichts eingetragen.',
+        '',
+        "Grund: $err",
+        '',
+        'Meist fehlen auf diesem Rechner die nötigen Rechte. So geht es trotzdem von Hand:',
+        '',
+        'Möglichkeit 1 - Befehl (am einfachsten)',
+        '  1. Windows-Taste drücken, "cmd" tippen, Enter (Eingabeaufforderung).',
+        '  2. Button "Befehl kopieren" klicken, im Fenster mit Rechtsklick einfügen, Enter.',
+        '',
+        'Möglichkeit 2 - Aufgabenplaner-Fenster (Button "Aufgabenplaner öffnen")',
+        ('  1. Rechts "Aufgabe erstellen ..." wählen. Name: ' + $name),
+        ('  2. Reiter "Trigger" > Neu: ' + $wann),
+        '  3. Reiter "Aktionen" > Neu > Programm starten:',
+        '       Programm:  powershell.exe',
+        ('       Argumente: ' + $psArgs),
+        '       (Button "Argumente kopieren")',
+        '  4. Mit OK speichern.',
+        '',
+        'Möglichkeit 3 - Notlösung ohne Aufgabenplaner',
+        '  Button "Beim Anmelden starten": DirToy führt die Aufgabe dann bei jeder Windows-Anmeldung einmal aus (Autostart-Ordner).',
+        '  Ein zeitlicher Plan oder ein Intervall ist damit nicht möglich.'
+    ) -join "`r`n"
+    $f = New-Object System.Windows.Forms.Form
+    $f.Text = 'Zeitplan von Hand anlegen'; $f.ClientSize = New-Object System.Drawing.Size(640, 520); $f.StartPosition = 'CenterParent'
+    $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.ShowInTaskbar = $false
+    $f.BackColor = $th.Surface; $f.ForeColor = $th.Text; $f.Font = $fNormal
+    $tb = New-Object System.Windows.Forms.TextBox; $tb.Multiline = $true; $tb.ReadOnly = $true; $tb.ScrollBars = 'Vertical'; $tb.BorderStyle = 'FixedSingle'
+    $tb.BackColor = $th.Input; $tb.ForeColor = $th.Text; $tb.Font = $fNormal; $tb.Text = $txt
+    [void](Add-To $f $tb 16 14 608 396)
+    $tb.Select(0, 0)
+    $b1 = New-Btn $f 16 424 140 34 'Befehl kopieren' $true $null
+    $b2 = New-Btn $f 164 424 160 34 'Argumente kopieren' $false $th.Surface
+    $b3 = New-Btn $f 332 424 190 34 'Aufgabenplaner öffnen' $false $th.Surface
+    $b4 = New-Btn $f 530 424 94 34 'Schließen' $false $th.Surface
+    $b5 = New-Btn $f 16 468 250 34 'Beim Anmelden starten' $false $th.Surface
+    $script:mCmd = $cmd; $script:mArgs = $psArgs; $script:mTask = $t
+    $b1.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mCmd); [void][System.Windows.Forms.MessageBox]::Show('Der Befehl liegt in der Zwischenablage.', 'DirToy') } catch { } })
+    $b2.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mArgs); [void][System.Windows.Forms.MessageBox]::Show('Die Argumente liegen in der Zwischenablage.', 'DirToy') } catch { } })
+    $b3.Add_Click({ try { Start-Process 'taskschd.msc' } catch { [void][System.Windows.Forms.MessageBox]::Show('Der Aufgabenplaner ließ sich nicht öffnen (Windows-Taste, "Aufgabenplanung" tippen).', 'DirToy') } })
+    $b4.Add_Click({ $b4.FindForm().Close() })
+    $b5.Add_Click({
+        $lnk = New-AutostartLink $script:mTask
+        if ($lnk) { Save-Tasks; [void][System.Windows.Forms.MessageBox]::Show("Eingerichtet. DirToy führt die Aufgabe ab jetzt bei jeder Windows-Anmeldung aus.`n`n$lnk", 'DirToy') }
+        else { [void][System.Windows.Forms.MessageBox]::Show('Der Eintrag im Autostart-Ordner ließ sich nicht anlegen.', 'DirToy', 'OK', 'Warning') }
+    })
+    $f.Add_HandleCreated({ try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($this.Handle, 20, [ref]$v, 4) } catch { } })
+    [void]$f.ShowDialog($owner)
+    $f.Dispose()
+}
 # ---- Zeitplan-Dialog
 function Show-ScheduleDialog($t) {
     $d = New-Object System.Windows.Forms.Form
-    $d.Text = 'Zeitplan'; $d.ClientSize = New-Object System.Drawing.Size(470, 410); $d.StartPosition = 'CenterParent'
+    $d.Text = 'Zeitplan'; $d.ClientSize = New-Object System.Drawing.Size(470, 448); $d.StartPosition = 'CenterParent'
     $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false; $d.ShowInTaskbar = $false
     $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
     $h = New-Object System.Windows.Forms.Label; $h.Text = "Zeitplan für  '$($t.Name)'"; $h.Font = $fBold; $h.AutoSize = $false; $h.TextAlign = 'MiddleLeft'
@@ -895,22 +1003,33 @@ function Show-ScheduleDialog($t) {
     $script:dMin = New-Object System.Windows.Forms.NumericUpDown; $script:dMin.Minimum = 1; $script:dMin.Maximum = 1440; $script:dMin.Value = 60
     $script:dMin.BackColor = $th.Input; $script:dMin.ForeColor = $th.Text
     [void](Add-To $d $script:dMin 20 136 120 28)
-    $script:dLblDays = New-Label $d 20 178 300 'Wochentage' $true
+    # Wiederholung (nur bei Taeglich/Woechentlich): danach alle X Minuten fuer Y Stunden
+    $script:dRep = New-Object System.Windows.Forms.CheckBox; $script:dRep.Text = 'Danach wiederholen alle'; $script:dRep.AutoSize = $false; $script:dRep.ForeColor = $th.Text
+    [void](Add-To $d $script:dRep 20 176 168 28)
+    $script:dRepMin = New-Object System.Windows.Forms.NumericUpDown; $script:dRepMin.Minimum = 1; $script:dRepMin.Maximum = 1440; $script:dRepMin.Value = 20
+    $script:dRepMin.BackColor = $th.Input; $script:dRepMin.ForeColor = $th.Text
+    [void](Add-To $d $script:dRepMin 192 176 62 28)
+    $script:dRepL1 = New-Label $d 260 181 62 'Min. für' $false
+    $script:dRepHr = New-Object System.Windows.Forms.NumericUpDown; $script:dRepHr.Minimum = 1; $script:dRepHr.Maximum = 24; $script:dRepHr.Value = 10
+    $script:dRepHr.BackColor = $th.Input; $script:dRepHr.ForeColor = $th.Text
+    [void](Add-To $d $script:dRepHr 326 176 56 28)
+    $script:dRepL2 = New-Label $d 388 181 60 'Std.' $false
+    $script:dLblDays = New-Label $d 20 216 300 'Wochentage' $true
     $script:dDays = @(); $names = @('Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'); $en = @('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
     for ($k = 0; $k -lt 7; $k++) {
         $cb = New-Object System.Windows.Forms.CheckBox; $cb.Text = $names[$k]; $cb.Tag = $en[$k]; $cb.AutoSize = $false; $cb.ForeColor = $th.Text
-        [void](Add-To $d $cb (20 + $k * 60) 200 58 26); $script:dDays += $cb
+        [void](Add-To $d $cb (20 + $k * 60) 238 58 26); $script:dDays += $cb
     }
-    [void](New-Label $d 20 238 430 'Windows-Meldung nach dem Lauf' $true)
+    [void](New-Label $d 20 276 430 'Windows-Meldung nach dem Lauf' $true)
     $script:dNotify = New-Object System.Windows.Forms.ComboBox; $script:dNotify.DropDownStyle = 'DropDownList'; $script:dNotify.FlatStyle = 'Flat'
     $script:dNotify.BackColor = $th.Input; $script:dNotify.ForeColor = $th.Text
     foreach ($x in @('Keine Meldung', 'Wenn etwas synchronisiert wurde oder Fehler auftraten', 'Nur bei Fehlern')) { [void]$script:dNotify.Items.Add($x) }
-    [void](Add-To $d $script:dNotify 20 260 430 28)
-    $info = New-Label $d 20 304 430 'Die Aufgabe läuft im Hintergrund, solange du angemeldet bist. Verpasste Läufe werden nachgeholt.' $true
-    $info.Height = 36
-    $script:dSave = New-Btn $d 20 356 140 34 'Aktivieren' $true $null
-    $script:dRemove = New-Btn $d 170 356 160 34 'Zeitplan entfernen' $false $th.Surface
-    $script:dCancel = New-Btn $d 340 356 110 34 'Abbrechen' $false $th.Surface
+    [void](Add-To $d $script:dNotify 20 298 430 28)
+    $script:dInfo = New-Label $d 20 342 430 '' $true
+    $script:dInfo.Height = 36
+    $script:dSave = New-Btn $d 20 394 140 34 'Aktivieren' $true $null
+    $script:dRemove = New-Btn $d 170 394 160 34 'Zeitplan entfernen' $false $th.Surface
+    $script:dCancel = New-Btn $d 340 394 110 34 'Abbrechen' $false $th.Surface
     $script:dTask = $t
 
     # vorhandene Werte laden
@@ -921,26 +1040,41 @@ function Show-ScheduleDialog($t) {
         try { $hm = ([string]$sc.Time).Split(':'); $script:dTime.Value = [datetime]::Today.AddHours([int]$hm[0]).AddMinutes([int]$hm[1]) } catch { }
         if ($sc.Minutes) { $script:dMin.Value = [int]$sc.Minutes }
         foreach ($cb in $script:dDays) { $cb.Checked = (@($sc.Days) -contains $cb.Tag) }
+        if ([bool]$sc.Repeat) {
+            $script:dRep.Checked = $true
+            if ($sc.RepMinutes) { $script:dRepMin.Value = [int]$sc.RepMinutes }
+            if ($sc.RepHours) { $script:dRepHr.Value = [int]$sc.RepHours }
+        }
     } else { $script:dTime.Value = [datetime]::Today.AddHours(22); foreach ($cb in $script:dDays) { $cb.Checked = ($cb.Tag -notin @('Saturday', 'Sunday')) } }
     $script:dRemove.Enabled = [bool]$t.SchedName
     if ($t.SchedName) { $script:dSave.Text = 'Speichern' }
 
-    $script:dType.Add_SelectedIndexChanged({
+    $upd = {
         $ty = $script:dType.SelectedIndex
         $script:dLblTime.Visible = $script:dTime.Visible = ($ty -le 1)
         $script:dLblMin.Visible = $script:dMin.Visible = ($ty -eq 2)
+        $vis = ($ty -ge 0 -and $ty -le 1)
+        $on = ($vis -and $script:dRep.Checked)
+        $script:dRep.Visible = $script:dRepMin.Visible = $script:dRepHr.Visible = $script:dRepL1.Visible = $script:dRepL2.Visible = $vis
+        $script:dRepMin.Enabled = $script:dRepHr.Enabled = $on
         $script:dLblDays.Visible = ($ty -eq 1); foreach ($cb in $script:dDays) { $cb.Visible = ($ty -eq 1) }
-    })
+        $script:dInfo.Text = if ($ty -eq 2 -or $on) { 'Die Aufgabe läuft im Hintergrund, solange du angemeldet bist. Verpasste Läufe werden bei Intervallen nicht nachgeholt.' }
+                             else { 'Die Aufgabe läuft im Hintergrund, solange du angemeldet bist. Verpasste Läufe werden nachgeholt.' }
+    }
+    $script:dType.Add_SelectedIndexChanged($upd)
+    $script:dRep.Add_CheckedChanged($upd)
     $script:dType.SelectedIndex = -1; $script:dType.SelectedIndex = if ($sc) { [int]$sc.Type } else { 0 }
 
     $script:dSave.Add_Click({
         $ty = $script:dType.SelectedIndex
         $days = @($script:dDays | Where-Object { $_.Checked } | ForEach-Object { [string]$_.Tag })
         if ($ty -eq 1 -and $days.Count -eq 0) { [void][System.Windows.Forms.MessageBox]::Show('Bitte mindestens einen Wochentag wählen.', 'Zeitplan'); return }
+        $rp = ($ty -le 1 -and $script:dRep.Checked)
+        if ($rp -and [int]$script:dRepMin.Value -gt [int]$script:dRepHr.Value * 60) { [void][System.Windows.Forms.MessageBox]::Show('Das Intervall darf nicht länger sein als der Zeitraum.', 'Zeitplan'); return }
         $tt = $script:dTask
-        $tt.Schedule = [pscustomobject]@{ Type = $ty; Time = $script:dTime.Value.ToString('HH:mm'); Days = $days; Minutes = [int]$script:dMin.Value; Notify = $script:dNotify.SelectedIndex }
-        try { Register-Sched $tt; Save-Tasks; $script:dSave.FindForm().DialogResult = 'OK' }
-        catch { [void][System.Windows.Forms.MessageBox]::Show("Der Zeitplan konnte nicht angelegt werden:`n$($_.Exception.Message)", 'Fehler', 'OK', 'Error') }
+        $new = [pscustomobject]@{ Type = $ty; Time = $script:dTime.Value.ToString('HH:mm'); Days = $days; Minutes = [int]$script:dMin.Value; Repeat = $rp; RepMinutes = [int]$script:dRepMin.Value; RepHours = [int]$script:dRepHr.Value; Notify = $script:dNotify.SelectedIndex }
+        try { Register-Sched $tt $new; Save-Tasks; $script:dSave.FindForm().DialogResult = 'OK' }
+        catch { Show-ManualSchedDialog $tt $new $_.Exception.Message $script:dSave.FindForm() }
     })
     $script:dRemove.Add_Click({
         $tt = $script:dTask
@@ -962,7 +1096,9 @@ function Update-SchedLabel {
     if ($info) {
         $n = if ($info.Next -and $info.Next.Year -gt 2000) { '  ·  nächster Lauf ' + $info.Next.ToString('dd.MM. HH:mm') } else { '' }
         $script:lblSched.Text = 'Zeitplan: ' + (Get-SchedText $t.Schedule) + $n
-    } elseif ($t.SchedName) { $script:lblSched.Text = 'Zeitplan im Aufgabenplaner nicht mehr vorhanden' }
+    } elseif ($t.SchedName) { $script:lblSched.Text = 'ACHTUNG: Zeitplan im Aufgabenplaner nicht vorhanden - bitte "Zeitplan ..." neu aktivieren' }
+    elseif ($t.AutoLnk -and (Test-Path -LiteralPath ([string]$t.AutoLnk))) { $script:lblSched.Text = 'Läuft bei jeder Windows-Anmeldung (Autostart-Ordner)' }
+    elseif ($t.Schedule) { $script:lblSched.Text = 'ACHTUNG: Zeitplan ist nicht angelegt - bitte "Zeitplan ..." neu aktivieren' }
     else { $script:lblSched.Text = 'Kein Zeitplan' }
 }
 # ---- Hilfe-Fenster
@@ -1004,7 +1140,7 @@ function Show-Help {
     HelpP 'Dateien werden zuerst unter einem Zwischennamen (.dirtoy-tmp) kopiert und erst am Ende umbenannt. Bricht ein Lauf ab oder schließt du das Fenster, bleibt die alte Datei im Ziel unverändert; übrig gebliebene Zwischendateien räumt DirToy beim nächsten Lauf auf. Mit "Abbrechen" stoppst du einen Lauf nach der aktuellen Datei.'
     HelpP 'Vor dem Löschen fragt das Tool nach. Gelöscht wird in den Papierkorb, bei Netzlaufwerken ohne Papierkorb aber endgültig. Schau dir deshalb bei "Synchronisieren" und "Echo" zuerst die Vorschau an. Ordner dürfen nicht identisch sein oder ineinander liegen. Ordner werden komplett mit allen Unterordnern gespiegelt, auch leere. Ein Ordner wird nur gelöscht, wenn er danach wirklich leer ist (ausgeschlossene Dateien darin verhindern das Löschen).'
     HelpH 'Zeitplan (automatisch)'
-    HelpP 'Mit "Zeitplan ..." legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten oder bei der Anmeldung. Du kannst ihn dort jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen.'
+    HelpP 'Mit "Zeitplan ..." legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten oder bei der Anmeldung. Täglich und wöchentlich lassen sich mit "Danach wiederholen alle ... Min. für ... Std." kombinieren (z. B. täglich ab 08:00 alle 20 Minuten für 10 Stunden). Du kannst den Eintrag im Aufgabenplaner jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt, bei Intervallen und Wiederholungen aber nicht. DirToy prüft nach dem Anlegen, ob der Eintrag wirklich existiert. Fehlen auf dem Rechner die Rechte (kein Administrator), zeigt DirToy eine Anleitung zum Anlegen von Hand, mit kopierbarem Befehl und als Notlösung einem Autostart-Eintrag. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen.'
     HelpP 'Nach einem automatischen Lauf kann eine Windows-Meldung erscheinen: nie, wenn etwas passiert ist oder Fehler auftraten, oder nur bei Fehlern.'
     HelpH 'Große Vorschau'
     HelpP 'Die Liste zeigt höchstens 2000 Zeilen. Gibt es mehr Aktionen, steht am Ende die Zeile "... und N weitere Aktionen": Ein Doppelklick darauf öffnet die komplette Vorschau als CSV-Datei (DirToy-Daten\vorschau.csv, z. B. in Excel) mit den Spalten Aktion, Ordner, Datei und Relativer Pfad, die du dort filtern und sortieren kannst. Die Summen je Aktion stehen schon in der Liste. Bei einem echten Lauf läuft die Liste mit: Es bleiben die letzten 2000 Aktionen sichtbar, die ältesten fallen oben heraus (Fehler werden am Ende noch einmal aufgelistet). Alle Aktionen werden ausgeführt und stehen im Protokoll.'
@@ -1119,6 +1255,24 @@ function New-DesktopShortcut {
         $ico = Join-Path $dir 'DirToy.ico'
         if (Test-Path $ico) { $sc.IconLocation = $ico }
         $sc.Save()
+        return $lnk
+    } catch { return $null }
+}
+# Notloesung ohne Aufgabenplaner: Verknuepfung im Autostart-Ordner startet die Aufgabe bei jeder Anmeldung
+function New-AutostartLink($t) {
+    try {
+        $dir = if ($env:DIRTOY_STARTUP) { $env:DIRTOY_STARTUP } else { [Environment]::GetFolderPath('Startup') }
+        $lnk = Join-Path $dir (('DirToy - ' + ([string]$t.Name -replace '[\\/:*?"<>|]', '_').Trim()) + '.lnk')
+        $ws = New-Object -ComObject WScript.Shell
+        $sc = $ws.CreateShortcut($lnk)
+        $c = Get-LaunchCommand
+        $sc.TargetPath = $c.File
+        $sc.Arguments = $c.Args + " -Task `"$($t.Id)`""
+        $sc.WorkingDirectory = Split-Path $script:scriptPath
+        $sc.WindowStyle = 7
+        $sc.Description = "DirToy: $($t.Name)"
+        $sc.Save()
+        $t.AutoLnk = $lnk
         return $lnk
     } catch { return $null }
 }
@@ -1476,6 +1630,14 @@ $form.Add_Shown({
                 if (-not $made) { [void][System.Windows.Forms.MessageBox]::Show('Die Verknüpfung konnte nicht angelegt werden.', 'DirToy', 'OK', 'Warning') }
             }
         }
+    }
+    # Zeitplaene pruefen: gespeichert, aber im Windows-Aufgabenplaner nicht vorhanden?
+    $missing = @($script:tasks | Where-Object {
+        ($_.SchedName -and -not (Get-SchedInfo $_)) -or ($_.Schedule -and -not $_.SchedName -and -not ($_.AutoLnk -and (Test-Path -LiteralPath ([string]$_.AutoLnk))))
+    } | ForEach-Object { [string]$_.Name })
+    if ($missing.Count -gt 0) {
+        $q = "Für diese Aufgaben ist ein Zeitplan gespeichert, er ist aber im Windows-Aufgabenplaner nicht vorhanden. Sie laufen daher NICHT automatisch:`n`n  " + ($missing -join "`n  ") + "`n`nBitte die Aufgabe wählen und unter `"Zeitplan ...`" neu aktivieren. Falls das nicht geht, zeigt DirToy dort eine Anleitung zum manuellen Anlegen."
+        [void][System.Windows.Forms.MessageBox]::Show($q, 'DirToy - Zeitplan', 'OK', 'Warning')
     }
     if ([bool](Get-Setting 'UpdateCheck' $true)) { Start-UpdateCheck $false }
     if ($script:tasks.Count -eq 0) { $btnNew.PerformClick() }

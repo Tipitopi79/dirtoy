@@ -15,7 +15,7 @@ Geschrieben in PowerShell (WinForms), ohne Installation lauffähig.
 - **Ausschlussfeld**: Dateinamen und Muster mit `;` getrennt, z. B. `Thumbs.db;*.tmp;node_modules`
 - **Vorschau** zeigt, was passieren würde, ohne etwas zu verändern. Bei sehr vielen Aktionen (mehr als 2000) öffnet ein Doppelklick auf die letzte Zeile die komplette Liste als CSV-Datei (Excel: filtern, sortieren), die Summen je Aktion stehen schon in der Liste
 - **Fortschrittsbalken** und **Protokoll** (Liste im Fenster und `sync.log`)
-- **Zeitpläne** direkt im Tool: legt Einträge im Windows-Aufgabenplaner an, ändert und entfernt sie
+- **Zeitpläne** direkt im Tool: legt Einträge im Windows-Aufgabenplaner an, ändert und entfernt sie. Auch Intervalle wie "täglich ab 08:00 alle 20 Minuten für 10 Stunden" (verpasste Intervalle werden nicht nachgeholt). DirToy prüft nach dem Anlegen, ob der Eintrag wirklich existiert; klappt es nicht (z. B. ohne Administratorrechte), zeigt es eine Anleitung zum manuellen Anlegen
 - Windows-**Benachrichtigung** nach automatischen Läufen
 - **Update-Hinweis**: DirToy sucht beim Start bei GitHub nach einem neueren Release (abschaltbar). Der Button "Update verfügbar" bietet "Jetzt aktualisieren" (lädt, prüft und ersetzt `DirToy.ps1`, die alte Datei bleibt als Sicherung) oder die Release-Seite im Browser
 - **Hell- und Dunkel-Design**: automatisch wie Windows oder fest einstellbar (Button "Design")
