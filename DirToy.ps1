@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.6.0'
+$script:version = '1.7.0'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -54,6 +54,7 @@ $script:modes = @(
     'Beitragen  (A -> B, es wird nichts gelöscht)'
 )
 $script:warn = New-Object System.Collections.Generic.List[string]
+$script:results = New-Object System.Collections.Generic.List[object]   # Ergebnisse der Laeufe fuers Ergebnis-Fenster
 $script:tasks = @()
 $script:cur = $null
 $script:loading = $false
@@ -421,6 +422,7 @@ function Run-Task($t, [bool]$preview) {
     }
     $copied = 0; $deleted = 0; $errors = 0; $i = 0; $cancelled = $false; $lastPump = [Environment]::TickCount - 1000
     $errList = New-Object System.Collections.Generic.List[string]; $script:bulk = $true
+    $resItems = New-Object System.Collections.Generic.List[object]; $sum = [ordered]@{}; $bytes = [long]0; $skipped = 0; $t0 = Get-Date
     foreach ($p in $plan) {
         if ($script:cancel) { $cancelled = $true; break }
         $i++
@@ -441,7 +443,7 @@ function Run-Task($t, [bool]$preview) {
         try {
             $st = 'OK'
             switch ($p.Typ) {
-                'Copy'     { Copy-One $p.Src $p.Dst; $copied++ }
+                'Copy'     { $len = 0; try { $len = (New-Object System.IO.FileInfo $p.Src).Length } catch { }; Copy-One $p.Src $p.Dst; $copied++; $bytes += $len }
                 'Delete'   { Delete-One $p.Src; $deleted++ }
                 'MkDir'    { [void][System.IO.Directory]::CreateDirectory($p.Dst); $copied++ }
                 'RmDir'    {
@@ -456,17 +458,21 @@ function Run-Task($t, [bool]$preview) {
                 'Conflict' { $st = 'übersprungen' }
             }
             if ($script:logOn) { Write-LogLine $p.Text $p.Rel $st }
+            if ($st -eq 'OK') { if ($sum.Contains($p.Text)) { $sum[$p.Text]++ } else { $sum[$p.Text] = 1 } } elseif ($st -like 'übersprungen*') { $skipped++ }
+            if (-not $script:headless) { $resItems.Add(@($p.Text, $p.Rel, $st)) }
             if ($it) { $it.SubItems[2].Text = $st; $it.ForeColor = (Get-StatusColor $st) }
         } catch {
             if ($_.Exception.Message -eq 'DIRTOY_CANCEL') {
                 $cancelled = $true
                 if ($script:logOn) { Write-LogLine $p.Text $p.Rel 'abgebrochen (Zieldatei unverändert)' }
+                if (-not $script:headless) { $resItems.Add(@($p.Text, $p.Rel, 'abgebrochen')) }
                 if ($it) { $it.SubItems[2].Text = 'abgebrochen'; $it.ForeColor = (Get-StatusColor 'abgebrochen') }
                 break
             }
             $errors++
             $emsg = 'FEHLER: ' + $_.Exception.Message
             if ($errList.Count -lt 50) { $errList.Add($p.Text + ' | ' + $p.Rel + ' | ' + $emsg) }
+            if (-not $script:headless) { $resItems.Add(@($p.Text, $p.Rel, $emsg)) }
             if ($it) {
                 if ($script:logOn) { Write-LogLine $p.Text $p.Rel $emsg }
                 $it.SubItems[2].Text = $emsg; $it.ForeColor = (Get-StatusColor 'FEHLER')
@@ -474,6 +480,7 @@ function Run-Task($t, [bool]$preview) {
         }
     }
     $script:bulk = $false
+    $script:results.Add([pscustomobject]@{ Name = [string]$t.Name; Items = $resItems; Sum = $sum; Copied = $copied; Deleted = $deleted; Errors = $errors; Skipped = $skipped; Bytes = $bytes; Seconds = ((Get-Date) - $t0).TotalSeconds; Cancelled = $cancelled })
     if ($plan.Count -gt $uiMax) {
         if ($script:lv) { $script:lv.BeginUpdate(); try { while ($script:lv.Items.Count -gt $uiMax) { $script:lv.Items.RemoveAt(0) } } finally { $script:lv.EndUpdate() } }
         [void](Add-Log "Anzeige zeigt nur die letzten $uiMax Aktionen" 'Alle Aktionen stehen im Protokoll (sync.log)' '')
@@ -498,7 +505,7 @@ function Get-SchedText($s) {
     switch ([int]$s.Type) {
         0 { "täglich um $($s.Time)$rep" }
         1 { 'wöchentlich ' + ((@($s.Days) | ForEach-Object { $dn[[string]$_] }) -join ',') + " um $($s.Time)$rep" }
-        2 { "alle $($s.Minutes) Minuten" }
+        2 { "alle $($s.Minutes) Minuten" + $(if ([bool]$s.Start2) { " ab $($s.Time)" } else { '' }) }
         3 { 'bei Anmeldung' }
     }
 }
@@ -546,7 +553,8 @@ function Register-Sched($t, $s) {
     switch ([int]$s.Type) {
         0 { $trg = New-ScheduledTaskTrigger -Daily -At $at }
         1 { $trg = New-ScheduledTaskTrigger -Weekly -DaysOfWeek ([string[]]@($s.Days)) -At $at }
-        2 { $trg = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes ([int]$s.Minutes)) -RepetitionDuration (New-TimeSpan -Days 3650) }
+        2 { $at2 = if ([bool]$s.Start2) { $at } else { (Get-Date).AddMinutes(1) }
+            $trg = New-ScheduledTaskTrigger -Once -At $at2 -RepetitionInterval (New-TimeSpan -Minutes ([int]$s.Minutes)) -RepetitionDuration (New-TimeSpan -Days 3650) }
         3 { $trg = New-ScheduledTaskTrigger -AtLogOn -User $user }
     }
     if ($rep) {
@@ -582,7 +590,7 @@ function Get-SchtasksCommand($t, $s) {
     switch ([int]$s.Type) {
         0 { $c += " /SC DAILY /ST $($s.Time)" }
         1 { $c += " /SC WEEKLY /D " + ((@($s.Days) | ForEach-Object { $dm[[string]$_] }) -join ',') + " /ST $($s.Time)" }
-        2 { $c += " /SC MINUTE /MO $([int]$s.Minutes)" }
+        2 { $c += " /SC MINUTE /MO $([int]$s.Minutes)" + $(if ([bool]$s.Start2) { " /ST $($s.Time)" } else { '' }) }
         3 { $c += ' /SC ONLOGON' }
     }
     if ([bool]$s.Repeat -and [int]$s.Type -le 1) { $c += " /RI $([int]$s.RepMinutes) /DU {0:00}:00" -f [int]$s.RepHours }
@@ -775,8 +783,213 @@ function New-Card($parent, $x, $y, $w, $h) {
     Add-To $parent $p $x $y $w $h
 }
 
+# ---- Listen: Sortieren per Klick auf die Spaltenkoepfe, Markieren und Kopieren (Strg+C, Rechtsklick)
+if (-not ('DirToyLvSorter' -as [type])) {
+    Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
+using System;
+using System.Collections;
+using System.Windows.Forms;
+public class DirToyLvSorter : IComparer {
+    public int Col; public bool Asc;
+    public int Compare(object a, object b) {
+        string x = ((ListViewItem)a).SubItems[Col].Text, y = ((ListViewItem)b).SubItems[Col].Text;
+        int r = string.Compare(x, y, StringComparison.CurrentCultureIgnoreCase);
+        return Asc ? r : -r;
+    }
+}
+'@
+}
+function Copy-ListRows($lv, [bool]$all) {
+    $items = if ($all) { @($lv.Items) } else { @($lv.SelectedItems) }
+    if ($items.Count -eq 0) { return }
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($it in $items) { [void]$sb.AppendLine((@($it.SubItems | ForEach-Object { $_.Text }) -join "`t")) }
+    try { [System.Windows.Forms.Clipboard]::SetText($sb.ToString()) } catch { }
+}
+function Select-AllRows($lv) { $lv.BeginUpdate(); try { foreach ($i in $lv.Items) { $i.Selected = $true } } finally { $lv.EndUpdate() } }
+function Set-ListBehavior($lv, [bool]$sortable, [int]$rowH) {
+    $lv.View = 'Details'; $lv.FullRowSelect = $true; $lv.BorderStyle = 'None'; $lv.OwnerDraw = $true; $lv.Font = $fSmall
+    $lv.BackColor = $th.Surface; $lv.ForeColor = $th.Text
+    $lv.HeaderStyle = $(if ($sortable) { 'Clickable' } else { 'Nonclickable' })
+    $il = New-Object System.Windows.Forms.ImageList; $il.ImageSize = New-Object System.Drawing.Size(1, $rowH); $lv.SmallImageList = $il
+    $lv.Tag = @{ Col = -1; Asc = $true }
+    $lv.Add_DrawColumnHeader({
+        param($s, $e)
+        $br = New-Object System.Drawing.SolidBrush($script:th.Surface); $e.Graphics.FillRectangle($br, $e.Bounds); $br.Dispose()
+        $pen = New-Object System.Drawing.Pen($script:th.Border)
+        $e.Graphics.DrawLine($pen, $e.Bounds.Left, $e.Bounds.Bottom - 1, $e.Bounds.Right, $e.Bounds.Bottom - 1); $pen.Dispose()
+        $r = New-Object System.Drawing.Rectangle(($e.Bounds.X + 12), $e.Bounds.Y, ($e.Bounds.Width - 14), $e.Bounds.Height)
+        $fl = [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::Left
+        $txt = $e.Header.Text.ToUpper()
+        $st = $s.Tag
+        if ($st -and $st.Col -eq $e.ColumnIndex) { $txt += $(if ($st.Asc) { ' ' + [char]0x25B2 } else { ' ' + [char]0x25BC }) }
+        [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $txt, $s.Font, $r, $script:th.Muted, $fl)
+    })
+    $lv.Add_DrawItem({ param($s, $e) })
+    $lv.Add_DrawSubItem({
+        param($s, $e)
+        $bg = if ($e.Item.Selected) { $script:th.SelBg } else { $script:th.Surface }
+        $br = New-Object System.Drawing.SolidBrush($bg); $e.Graphics.FillRectangle($br, $e.Bounds); $br.Dispose()
+        $r = New-Object System.Drawing.Rectangle(($e.Bounds.X + 12), $e.Bounds.Y, ($e.Bounds.Width - 14), $e.Bounds.Height)
+        $col = if ($e.ColumnIndex -eq ($s.Columns.Count - 1)) { $e.Item.ForeColor } else { $script:th.Text }
+        $fl = [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::EndEllipsis -bor [System.Windows.Forms.TextFormatFlags]::Left -bor [System.Windows.Forms.TextFormatFlags]::NoPrefix
+        [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.SubItem.Text, $s.Font, $r, $col, $fl)
+    })
+    if ($sortable) {
+        $lv.Add_ColumnClick({
+            param($s, $e)
+            if ($script:busy) { return }
+            $st = $s.Tag
+            if ($st.Col -eq $e.Column) { $st.Asc = -not $st.Asc } else { $st.Col = $e.Column; $st.Asc = $true }
+            $so = New-Object DirToyLvSorter; $so.Col = $e.Column; $so.Asc = $st.Asc
+            $s.ListViewItemSorter = $so
+            $s.Invalidate()
+        })
+    }
+    $lv.Add_KeyDown({
+        param($s, $e)
+        if ($e.Control -and $e.KeyCode -eq 'C') { Copy-ListRows $s $false; $e.SuppressKeyPress = $true }
+        elseif ($e.Control -and $e.KeyCode -eq 'A') { Select-AllRows $s; $e.SuppressKeyPress = $true }
+    })
+    $cm = New-Object System.Windows.Forms.ContextMenuStrip
+    $m1 = $cm.Items.Add('Markierte Zeilen kopieren (Strg+C)'); $m2 = $cm.Items.Add('Alle Zeilen kopieren'); $m3 = $cm.Items.Add('Alles markieren (Strg+A)')
+    $m1.Add_Click({ Copy-ListRows $this.Owner.SourceControl $false })
+    $m2.Add_Click({ Copy-ListRows $this.Owner.SourceControl $true })
+    $m3.Add_Click({ Select-AllRows $this.Owner.SourceControl })
+    $lv.ContextMenuStrip = $cm
+}
+# Liste leeren und Sortierung zuruecksetzen (neue Zeilen kommen sonst an sortierter Stelle statt am Ende)
+function Clear-Log {
+    $script:lv.ListViewItemSorter = $null
+    if ($script:lv.Tag) { $script:lv.Tag.Col = -1 }
+    $script:lv.Items.Clear(); $script:lv.Invalidate()
+}
+
+# ---- Ergebnis-Fenster nach einem Lauf (Zusammenfassung wie bei SyncToy, Details sortier- und kopierbar)
+function Format-Bytes([long]$b) {
+    if ($b -ge 1GB) { return ('{0:N1} GB' -f ($b / 1GB)) }
+    if ($b -ge 1MB) { return ('{0:N1} MB' -f ($b / 1MB)) }
+    if ($b -ge 1KB) { return ('{0:N0} KB' -f ($b / 1KB)) }
+    return "$b Bytes"
+}
+function Write-ResultFile($results) {
+    try {
+        $path = Join-Path $script:dataDir 'ergebnis.csv'
+        $sw = New-Object System.IO.StreamWriter($path, $false, (New-Object System.Text.UTF8Encoding($true)))
+        try {
+            $sw.WriteLine('Aufgabe;Aktion;Ordner;Datei;Relativer Pfad;Status')
+            foreach ($r in $results) {
+                foreach ($it in $r.Items) {
+                    $rel = [string]$it[1]; $isDir = $rel.EndsWith('\')
+                    $x = $rel.TrimEnd('\'); $i = $x.LastIndexOf('\')
+                    $dir = if ($i -ge 0) { $x.Substring(0, $i) } else { '' }
+                    $name = if ($isDir) { '' } elseif ($i -ge 0) { $x.Substring($i + 1) } else { $x }
+                    if ($isDir) { $dir = $x }
+                    $cells = foreach ($c in @($r.Name, $it[0], $dir, $name, $rel, $it[2])) {
+                        $c = [string]$c
+                        if ($c.Length -gt 0 -and '=+-@'.Contains($c[0])) { $c = "'" + $c }
+                        '"' + $c.Replace('"', '""') + '"'
+                    }
+                    $sw.WriteLine($cells -join ';')
+                }
+            }
+        } finally { $sw.Dispose() }
+        return $path
+    } catch { return $null }
+}
+function Show-ResultDialog($results) {
+    $multi = (@($results).Count -gt 1)
+    $d = New-Object System.Windows.Forms.Form
+    $d.Text = 'DirToy - Ergebnis'; $d.ClientSize = New-Object System.Drawing.Size(840, 620); $d.MinimumSize = New-Object System.Drawing.Size(620, 460)
+    $d.StartPosition = 'CenterParent'; $d.ShowInTaskbar = $false; $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
+    $h = New-Object System.Windows.Forms.Label; $h.Font = $fBold; $h.AutoSize = $false; $h.TextAlign = 'MiddleLeft'; $h.BackColor = [System.Drawing.Color]::Transparent
+    $h.Text = if ($multi) { "Ergebnis - $(@($results).Count) Aufgaben" } else { "Ergebnis - '$(@($results)[0].Name)'" }
+    [void](Add-To $d $h 20 12 800 28)
+
+    # Zusammenfassung
+    $sv = New-Object System.Windows.Forms.ListView
+    [void]$sv.Columns.Add('Zusammenfassung', 600); [void]$sv.Columns.Add('Anzahl', 180)
+    Set-ListBehavior $sv $false 26
+    $addRow = { param($a, $b, $col, $bold)
+        $i = New-Object System.Windows.Forms.ListViewItem($a); [void]$i.SubItems.Add($b); $i.ForeColor = $col
+        if ($bold) { $i.Font = $fBold }
+        [void]$sv.Items.Add($i)
+    }
+    $tot = [pscustomobject]@{ Err = 0; Cancel = $false }
+    foreach ($r in $results) {
+        if ($multi) { & $addRow $r.Name '' $th.Text $true }
+        foreach ($k in $r.Sum.Keys) { & $addRow ('   ' + $k) ('{0:N0}' -f $r.Sum[$k]) $th.Text $false }
+        if ($r.Skipped -gt 0) { & $addRow '   Übersprungen' ('{0:N0}' -f $r.Skipped) $th.Muted $false }
+        if ($r.Errors -gt 0) { & $addRow '   Fehler' ('{0:N0}' -f $r.Errors) $th.Err $false; $tot.Err += $r.Errors }
+        $ts = [timespan]::FromSeconds([math]::Round($r.Seconds))
+        & $addRow ('   Dauer ' + $ts.ToString('hh\:mm\:ss') + ', kopierte Datenmenge ' + (Format-Bytes $r.Bytes)) '' $th.Muted $false
+        if ($r.Cancelled) { & $addRow '   Der Lauf wurde abgebrochen (unvollständig, keine halben Dateien)' '' $th.Err $false; $tot.Cancel = $true }
+    }
+    [void](Add-To $d $sv 20 46 800 170); $sv.Anchor = $A_TLR
+
+    $l2 = New-Label $d 20 226 800 'Einzelne Aktionen (Fehler zuerst). Spaltenkopf anklicken zum Sortieren, Strg+C kopiert die markierten Zeilen.' $true
+    $l2.Anchor = $A_TLR
+    # Details (Fehler zuerst, hoechstens 2000 Zeilen)
+    $dv = New-Object System.Windows.Forms.ListView
+    if ($multi) { [void]$dv.Columns.Add('Aufgabe', 140) }
+    [void]$dv.Columns.Add('Aktion', 210); [void]$dv.Columns.Add('Datei', 300); [void]$dv.Columns.Add('Status', 170)
+    Set-ListBehavior $dv $true 26
+    $max = 2000; $n = 0; $total = 0
+    foreach ($r in $results) { $total += $r.Items.Count }
+    $dv.BeginUpdate()
+    foreach ($pass in 1, 2) {
+        foreach ($r in $results) {
+            foreach ($it in $r.Items) {
+                $isErr = ([string]$it[2] -like 'FEHLER*')
+                if (($pass -eq 1) -ne $isErr) { continue }
+                if ($n -ge $max) { break }
+                $cells = [string[]]$(if ($multi) { @($r.Name, $it[0], $it[1], $it[2]) } else { @($it[0], $it[1], $it[2]) })
+                $li = New-Object System.Windows.Forms.ListViewItem($cells[0])
+                for ($c = 1; $c -lt $cells.Count; $c++) { [void]$li.SubItems.Add($cells[$c]) }
+                $li.ForeColor = Get-StatusColor ([string]$it[2])
+                [void]$dv.Items.Add($li); $n++
+            }
+        }
+    }
+    $dv.EndUpdate()
+    if ($total -gt $n) {
+        $cells = [string[]]$(if ($multi) { @('', "... und $($total - $n) weitere Aktionen", '(komplette Liste: Button "Details als CSV öffnen")', '') } else { @("... und $($total - $n) weitere Aktionen", '(komplette Liste: Button "Details als CSV öffnen")', '') })
+        $li = New-Object System.Windows.Forms.ListViewItem($cells[0]); for ($c = 1; $c -lt $cells.Count; $c++) { [void]$li.SubItems.Add($cells[$c]) }
+        $li.ForeColor = $th.Muted; [void]$dv.Items.Add($li)
+    }
+    [void](Add-To $d $dv 20 250 800 300); $dv.Anchor = $A_ALL
+    $dv.Add_Resize({
+        $f = $this; $w = $f.ClientSize.Width; $last = $f.Columns.Count - 1
+        $others = 0; for ($i = 0; $i -lt $f.Columns.Count; $i++) { if ($i -ne $last - 1) { $others += $f.Columns[$i].Width } }
+        $nw = $w - $others; if ($nw -gt 150) { $f.Columns[$last - 1].Width = $nw }
+    })
+
+    $script:resList = $results
+    $b1 = New-Btn $d 20 566 210 38 'Details als CSV öffnen' $false $th.Surface; $b1.Anchor = $A_BL
+    $b2 = New-Btn $d 720 566 100 38 'Schließen' $true $null; $b2.Anchor = $A_BR
+    $b1.Add_Click({
+        $f = Write-ResultFile $script:resList
+        if ($f) { try { Start-Process -FilePath $f -ErrorAction Stop } catch { Start-Process notepad.exe -ArgumentList "`"$f`"" } }
+        else { [void][System.Windows.Forms.MessageBox]::Show('Die CSV-Datei konnte nicht geschrieben werden.', 'DirToy', 'OK', 'Warning') }
+    })
+    $script:resClose = $b2
+    $b2.Add_Click({ $script:resClose.FindForm().Close() })
+    $d.CancelButton = $b2
+    $d.Add_HandleCreated({
+        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($script:resClose.FindForm().Handle, 20, [ref]$v, 4) } catch { }
+    })
+    [void]$d.ShowDialog($form)
+    $d.Dispose()
+}
+function Show-ResultsIfNeeded {
+    if ($script:closeRequested -or -not [bool](Get-Setting 'ShowResult' $true)) { return }
+    $list = @($script:results | Where-Object { ($_.Copied + $_.Deleted + $_.Errors + $_.Skipped) -gt 0 -or $_.Cancelled })
+    if ($list.Count -eq 0) { return }
+    Show-ResultDialog $list
+}
+
 # ---- Seitenleiste
-$side = New-Object System.Windows.Forms.Panel; $side.Dock = 'Left'; $side.Width = 270; $side.BackColor = $th.Surface
+$side =New-Object System.Windows.Forms.Panel; $side.Dock = 'Left'; $side.Width = 270; $side.BackColor = $th.Surface
 $form.Controls.Add($side)
 $lt = New-Object System.Windows.Forms.Label; $lt.Text = 'DirToy'; $lt.Font = $fTitle; $lt.ForeColor = $th.Accent; $lt.AutoSize = $true
 [void](Add-To $side $lt 18 16 0 0)
@@ -852,22 +1065,10 @@ $script:progTrack = $progTrack; $script:progFill = $progFill
 # ---- Log
 $logCard = New-Card $main 20 396 $cw 264; $logCard.Anchor = $A_ALL
 $lv = New-Object System.Windows.Forms.ListView
-$lv.View = 'Details'; $lv.FullRowSelect = $true; $lv.BorderStyle = 'None'; $lv.HeaderStyle = 'Nonclickable'
-$lv.BackColor = $th.Surface; $lv.ForeColor = $th.Text; $lv.Font = $fSmall; $lv.OwnerDraw = $true
 [void]$lv.Columns.Add('Aktion', 250); [void]$lv.Columns.Add('Datei', 330); [void]$lv.Columns.Add('Status', 180)
-$il = New-Object System.Windows.Forms.ImageList; $il.ImageSize = New-Object System.Drawing.Size(1, 30); $lv.SmallImageList = $il
+Set-ListBehavior $lv $true 30
 [void](Add-To $logCard $lv 0 0 $cw 264); $lv.Dock = 'Fill'
 $script:lv = $lv
-$lv.Add_DrawColumnHeader({
-    param($s, $e)
-    $br = New-Object System.Drawing.SolidBrush($script:th.Surface); $e.Graphics.FillRectangle($br, $e.Bounds); $br.Dispose()
-    $pen = New-Object System.Drawing.Pen($script:th.Border)
-    $e.Graphics.DrawLine($pen, $e.Bounds.Left, $e.Bounds.Bottom - 1, $e.Bounds.Right, $e.Bounds.Bottom - 1); $pen.Dispose()
-    $r = New-Object System.Drawing.Rectangle(($e.Bounds.X + 12), $e.Bounds.Y, ($e.Bounds.Width - 14), $e.Bounds.Height)
-    $fl = [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::Left
-    [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.Header.Text.ToUpper(), $s.Font, $r, $script:th.Muted, $fl)
-})
-$lv.Add_DrawItem({ param($s, $e) })
 $lv.Add_DoubleClick({
     if ($lv.SelectedItems.Count -gt 0) {
         $f = $lv.SelectedItems[0].Tag
@@ -876,15 +1077,6 @@ $lv.Add_DoubleClick({
             catch { Start-Process notepad.exe -ArgumentList "`"$f`"" }   # keine Zuordnung fuer .csv: im Editor oeffnen
         }
     }
-})
-$lv.Add_DrawSubItem({
-    param($s, $e)
-    $bg = if ($e.Item.Selected) { $script:th.SelBg } else { $script:th.Surface }
-    $br = New-Object System.Drawing.SolidBrush($bg); $e.Graphics.FillRectangle($br, $e.Bounds); $br.Dispose()
-    $r = New-Object System.Drawing.Rectangle(($e.Bounds.X + 12), $e.Bounds.Y, ($e.Bounds.Width - 14), $e.Bounds.Height)
-    $col = if ($e.ColumnIndex -eq 2) { $e.Item.ForeColor } else { $script:th.Text }
-    $fl = [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::EndEllipsis -bor [System.Windows.Forms.TextFormatFlags]::Left -bor [System.Windows.Forms.TextFormatFlags]::NoPrefix
-    [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.SubItem.Text, $s.Font, $r, $col, $fl)
 })
 $lv.Add_Resize({
     $w = $lv.ClientSize.Width - $lv.Columns[0].Width - $lv.Columns[2].Width
@@ -999,7 +1191,7 @@ function Show-ScheduleDialog($t) {
     $script:dLblTime = New-Label $d 20 114 200 'Uhrzeit' $true
     $script:dTime = New-Object System.Windows.Forms.DateTimePicker; $script:dTime.Format = 'Custom'; $script:dTime.CustomFormat = 'HH:mm'; $script:dTime.ShowUpDown = $true
     [void](Add-To $d $script:dTime 20 136 120 28)
-    $script:dLblMin = New-Label $d 20 114 200 'Intervall in Minuten' $true
+    $script:dLblMin = New-Label $d 20 114 140 'Intervall in Minuten' $true
     $script:dMin = New-Object System.Windows.Forms.NumericUpDown; $script:dMin.Minimum = 1; $script:dMin.Maximum = 1440; $script:dMin.Value = 60
     $script:dMin.BackColor = $th.Input; $script:dMin.ForeColor = $th.Text
     [void](Add-To $d $script:dMin 20 136 120 28)
@@ -1034,6 +1226,8 @@ function Show-ScheduleDialog($t) {
 
     # vorhandene Werte laden
     $sc = $t.Schedule
+    # Startzeit beim Intervall: bei neuen Zeitplaenen und Altbestand ohne Startzeit ist der Vorschlag "jetzt"
+    $script:dNowSet = [bool]($sc -and [int]$sc.Type -eq 2 -and [bool]$sc.Start2)
     $script:dType.SelectedIndex = if ($sc) { [int]$sc.Type } else { 0 }
     $script:dNotify.SelectedIndex = if ($sc -and $null -ne $sc.Notify) { [int]$sc.Notify } else { 1 }
     if ($sc) {
@@ -1051,8 +1245,13 @@ function Show-ScheduleDialog($t) {
 
     $upd = {
         $ty = $script:dType.SelectedIndex
-        $script:dLblTime.Visible = $script:dTime.Visible = ($ty -le 1)
+        $script:dLblTime.Visible = $script:dTime.Visible = ($ty -ge 0 -and $ty -le 2)
+        # Beim Intervall steht die Startzeit rechts neben dem Intervall, sonst an der Stelle der Uhrzeit
+        $tx = if ($ty -eq 2) { 170 } else { 20 }
+        $script:dLblTime.Location = New-Object System.Drawing.Point($tx, 114); $script:dTime.Location = New-Object System.Drawing.Point($tx, 136)
+        $script:dLblTime.Text = if ($ty -eq 2) { 'Startzeit (erster Lauf)' } else { 'Uhrzeit' }
         $script:dLblMin.Visible = $script:dMin.Visible = ($ty -eq 2)
+        if ($ty -eq 2 -and -not $script:dNowSet) { $script:dNowSet = $true; $script:dTime.Value = [datetime]::Now }
         $vis = ($ty -ge 0 -and $ty -le 1)
         $on = ($vis -and $script:dRep.Checked)
         $script:dRep.Visible = $script:dRepMin.Visible = $script:dRepHr.Visible = $script:dRepL1.Visible = $script:dRepL2.Visible = $vis
@@ -1072,7 +1271,7 @@ function Show-ScheduleDialog($t) {
         $rp = ($ty -le 1 -and $script:dRep.Checked)
         if ($rp -and [int]$script:dRepMin.Value -gt [int]$script:dRepHr.Value * 60) { [void][System.Windows.Forms.MessageBox]::Show('Das Intervall darf nicht länger sein als der Zeitraum.', 'Zeitplan'); return }
         $tt = $script:dTask
-        $new = [pscustomobject]@{ Type = $ty; Time = $script:dTime.Value.ToString('HH:mm'); Days = $days; Minutes = [int]$script:dMin.Value; Repeat = $rp; RepMinutes = [int]$script:dRepMin.Value; RepHours = [int]$script:dRepHr.Value; Notify = $script:dNotify.SelectedIndex }
+        $new = [pscustomobject]@{ Type = $ty; Time = $script:dTime.Value.ToString('HH:mm'); Days = $days; Minutes = [int]$script:dMin.Value; Start2 = ($ty -eq 2); Repeat = $rp; RepMinutes = [int]$script:dRepMin.Value; RepHours = [int]$script:dRepHr.Value; Notify = $script:dNotify.SelectedIndex }
         try { Register-Sched $tt $new; Save-Tasks; $script:dSave.FindForm().DialogResult = 'OK' }
         catch { Show-ManualSchedDialog $tt $new $_.Exception.Message $script:dSave.FindForm() }
     })
@@ -1140,12 +1339,13 @@ function Show-Help {
     HelpP 'Dateien werden zuerst unter einem Zwischennamen (.dirtoy-tmp) kopiert und erst am Ende umbenannt. Bricht ein Lauf ab oder schließt du das Fenster, bleibt die alte Datei im Ziel unverändert; übrig gebliebene Zwischendateien räumt DirToy beim nächsten Lauf auf. Mit "Abbrechen" stoppst du einen Lauf nach der aktuellen Datei.'
     HelpP 'Vor dem Löschen fragt das Tool nach. Gelöscht wird in den Papierkorb, bei Netzlaufwerken ohne Papierkorb aber endgültig. Schau dir deshalb bei "Synchronisieren" und "Echo" zuerst die Vorschau an. Ordner dürfen nicht identisch sein oder ineinander liegen. Ordner werden komplett mit allen Unterordnern gespiegelt, auch leere. Ein Ordner wird nur gelöscht, wenn er danach wirklich leer ist (ausgeschlossene Dateien darin verhindern das Löschen).'
     HelpH 'Zeitplan (automatisch)'
-    HelpP 'Mit "Zeitplan ..." legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten oder bei der Anmeldung. Täglich und wöchentlich lassen sich mit "Danach wiederholen alle ... Min. für ... Std." kombinieren (z. B. täglich ab 08:00 alle 20 Minuten für 10 Stunden). Du kannst den Eintrag im Aufgabenplaner jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt, bei Intervallen und Wiederholungen aber nicht. DirToy prüft nach dem Anlegen, ob der Eintrag wirklich existiert. Fehlen auf dem Rechner die Rechte (kein Administrator), zeigt DirToy eine Anleitung zum Anlegen von Hand, mit kopierbarem Befehl und als Notlösung einem Autostart-Eintrag. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen.'
+    HelpP 'Mit "Zeitplan ..." legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten (mit Startzeit) oder bei der Anmeldung. Täglich und wöchentlich lassen sich mit "Danach wiederholen alle ... Min. für ... Std." kombinieren (z. B. täglich ab 08:00 alle 20 Minuten für 10 Stunden). Du kannst den Eintrag im Aufgabenplaner jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt, bei Intervallen und Wiederholungen aber nicht. DirToy prüft nach dem Anlegen, ob der Eintrag wirklich existiert. Fehlen auf dem Rechner die Rechte (kein Administrator), zeigt DirToy eine Anleitung zum Anlegen von Hand, mit kopierbarem Befehl und als Notlösung einem Autostart-Eintrag. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen.'
     HelpP 'Nach einem automatischen Lauf kann eine Windows-Meldung erscheinen: nie, wenn etwas passiert ist oder Fehler auftraten, oder nur bei Fehlern.'
     HelpH 'Große Vorschau'
     HelpP 'Die Liste zeigt höchstens 2000 Zeilen. Gibt es mehr Aktionen, steht am Ende die Zeile "... und N weitere Aktionen": Ein Doppelklick darauf öffnet die komplette Vorschau als CSV-Datei (DirToy-Daten\vorschau.csv, z. B. in Excel) mit den Spalten Aktion, Ordner, Datei und Relativer Pfad, die du dort filtern und sortieren kannst. Die Summen je Aktion stehen schon in der Liste. Bei einem echten Lauf läuft die Liste mit: Es bleiben die letzten 2000 Aktionen sichtbar, die ältesten fallen oben heraus (Fehler werden am Ende noch einmal aufgelistet). Alle Aktionen werden ausgeführt und stehen im Protokoll.'
     HelpH 'Protokoll'
     HelpP 'Die Liste unten zeigt den aktuellen Lauf. Alle echten Läufe, manuell und automatisch, stehen zusätzlich mit Uhrzeit in DirToy-Daten\sync.log. Der Button "Protokoll" öffnet diese Datei.'
+    HelpP 'Nach einem manuellen Lauf, bei dem etwas passiert ist oder Fehler auftraten, öffnet sich ein Ergebnis-Fenster: Zusammenfassung je Aktion (kopiert, aktualisiert, gelöscht ...), Fehler, Dauer und Datenmenge, darunter die einzelnen Aktionen (Fehler zuerst). Ein Klick auf einen Spaltenkopf sortiert, Strg+C kopiert markierte Zeilen, "Details als CSV öffnen" zeigt alles in Excel. Das Fenster lässt sich unten im Hilfe-Fenster abschalten. Auch die Liste im Hauptfenster ist sortierbar und kopierbar (Strg+C, Strg+A, Rechtsklick).'
     HelpH 'Design'
     HelpP 'Der Button "Design" unten links wechselt zwischen Automatisch (wie Windows), Hell und Dunkel. DirToy startet dabei kurz neu, die Einstellung steht in DirToy-Daten\einstellungen.json.'
     HelpH 'Updates'
@@ -1159,6 +1359,10 @@ function Show-Help {
         if ($p) { [void][System.Windows.Forms.MessageBox]::Show("Die Verknüpfung wurde auf dem Desktop angelegt:`n$p", 'DirToy', 'OK', 'Information') }
         else { [void][System.Windows.Forms.MessageBox]::Show('Die Verknüpfung konnte nicht angelegt werden.', 'DirToy', 'OK', 'Warning') }
     })
+    $cbr = New-Object System.Windows.Forms.CheckBox; $cbr.Text = 'Ergebnis-Fenster nach dem Lauf zeigen'; $cbr.AutoSize = $true; $cbr.BackColor = [System.Drawing.Color]::Transparent
+    $cbr.Checked = [bool](Get-Setting 'ShowResult' $true); $cbr.Location = New-Object System.Drawing.Point(240, 592); $cbr.Anchor = $A_BL
+    $cbr.Add_CheckedChanged({ Set-Setting 'ShowResult' $this.Checked })
+    $d.Controls.Add($cbr)
     $bc = New-Btn $d 556 584 100 36 'Schließen' $true $null; $bc.Anchor = $A_BR
     $script:helpClose = $bc
     $bc.Add_Click({ $script:helpClose.FindForm().Close() })
@@ -1591,18 +1795,20 @@ $btnSched.Add_Click({
 })
 $btnPrev.Add_Click({
     if (-not $script:cur) { return }
-    $lv.Items.Clear(); Set-Busy $true
+    Clear-Log; Set-Busy $true
     try { [void](Run-Task $script:cur $true) } finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Vorschau fertig.' }) }
 })
 $btnRun.Add_Click({
     if (-not $script:cur) { return }
-    $lv.Items.Clear(); Set-Busy $true
+    Clear-Log; $script:results.Clear(); Set-Busy $true
     try { [void](Run-Task $script:cur $false) } finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Fertig.' }) }
+    Show-ResultsIfNeeded
 })
 $btnAll.Add_Click({
-    $lv.Items.Clear(); Set-Busy $true
+    Clear-Log; $script:results.Clear(); Set-Busy $true
     try { foreach ($t in @($script:tasks)) { [void](Run-Task $t $false); if ($script:cancel) { break } } }
     finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Alle Aufgaben abgearbeitet.' }) }
+    Show-ResultsIfNeeded
 })
 $btnCancel.Add_Click({
     $script:cancel = $true; $btnCancel.Enabled = $false; $btnCancel.Text = 'Bricht ab ...'

@@ -14,6 +14,7 @@ Geschrieben in PowerShell (WinForms), ohne Installation lauffähig.
 - **Ordnerbaum zum Abwählen**: beide Ordner nebeneinander als Baum, Haken entfernen = Ordner samt Unterordnern wird nicht synchronisiert. Neue Ordner sind standardmäßig dabei, gespeichert werden nur die abgewählten
 - **Ausschlussfeld**: Dateinamen und Muster mit `;` getrennt, z. B. `Thumbs.db;*.tmp;node_modules`
 - **Vorschau** zeigt, was passieren würde, ohne etwas zu verändern. Bei sehr vielen Aktionen (mehr als 2000) öffnet ein Doppelklick auf die letzte Zeile die komplette Liste als CSV-Datei (Excel: filtern, sortieren), die Summen je Aktion stehen schon in der Liste
+- **Ergebnis-Fenster** nach jedem manuellen Lauf (wie bei SyncToy): Zusammenfassung je Aktion, Fehler, Dauer, Datenmenge und die einzelnen Aktionen, sortierbar per Klick auf den Spaltenkopf und kopierbar (Strg+C); komplette Liste als CSV. Auch die Liste im Hauptfenster lässt sich sortieren und kopieren
 - **Fortschrittsbalken** und **Protokoll** (Liste im Fenster und `sync.log`)
 - **Zeitpläne** direkt im Tool: legt Einträge im Windows-Aufgabenplaner an, ändert und entfernt sie. Auch Intervalle wie "täglich ab 08:00 alle 20 Minuten für 10 Stunden" (verpasste Intervalle werden nicht nachgeholt). DirToy prüft nach dem Anlegen, ob der Eintrag wirklich existiert; klappt es nicht (z. B. ohne Administratorrechte), zeigt es eine Anleitung zum manuellen Anlegen
 - Windows-**Benachrichtigung** nach automatischen Läufen
