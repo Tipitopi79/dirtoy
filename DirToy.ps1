@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.7.0'
+$script:version = '1.7.1'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -31,18 +31,50 @@ $script:inPlan = $false
 $script:scanCount = 0
 $script:tmpFiles = $null
 $script:copyBuf = $null
-$script:dataDir  = if ($env:DIRTOY_DATA) { $env:DIRTOY_DATA } else { Join-Path $PSScriptRoot 'DirToy-Daten' }
+# Datenordner: DirToy-Daten neben dem Programm; ist dort nicht schreibbar (z. B. C:\Program Files ohne Admin-Rechte),
+# dann %APPDATA%\DirToy. Beim ersten Wechsel werden Aufgaben, Einstellungen und Zustand aus dem alten Ordner uebernommen.
+function Test-DirWritable([string]$dir) {
+    try {
+        if (-not (Test-Path -LiteralPath $dir)) { [void](New-Item -ItemType Directory -Force -Path $dir) }
+        $f = Join-Path $dir ('.schreibtest-' + [guid]::NewGuid().ToString('N'))
+        [System.IO.File]::WriteAllText($f, 'x'); [System.IO.File]::Delete($f)
+        return $true
+    } catch { return $false }
+}
+$script:localData = Join-Path $PSScriptRoot 'DirToy-Daten'
+$script:dataFallback = $false
+if ($env:DIRTOY_DATA) { $script:dataDir = $env:DIRTOY_DATA }
+else {
+    # Migration: Datenordner frueherer Namen -> DirToy-Daten
+    try {
+        if (-not (Test-Path $script:localData)) {
+            foreach ($o in @('TwinSync-Daten', 'SyncTool-Daten')) {
+                $old = Join-Path $PSScriptRoot $o
+                if (Test-Path $old) { Rename-Item -Path $old -NewName 'DirToy-Daten'; break }
+            }
+        }
+    } catch { }
+    if (Test-DirWritable $script:localData) { $script:dataDir = $script:localData }
+    else {
+        $script:dataFallback = $true
+        $script:dataDir = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'DirToy'
+        try {
+            if (-not (Test-Path (Join-Path $script:dataDir 'aufgaben.json')) -and (Test-Path -LiteralPath $script:localData)) {
+                [void](New-Item -ItemType Directory -Force -Path $script:dataDir)
+                foreach ($n in 'aufgaben.json', 'einstellungen.json') {
+                    $src = Join-Path $script:localData $n
+                    if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $script:dataDir -Force }
+                }
+                $sd = Join-Path $script:localData 'state'
+                if (Test-Path -LiteralPath $sd) { Copy-Item -LiteralPath $sd -Destination $script:dataDir -Recurse -Force }
+            }
+        } catch { }
+    }
+}
+$script:errLog = Join-Path $script:dataDir 'fehler.log'
 $script:stateDir = Join-Path $script:dataDir 'state'
 $script:taskFile = Join-Path $script:dataDir 'aufgaben.json'
-# Migration: Datenordner frueherer Namen -> DirToy-Daten
-try {
-    if (-not $env:DIRTOY_DATA -and -not (Test-Path $script:dataDir)) {
-        foreach ($o in @('TwinSync-Daten', 'SyncTool-Daten')) {
-            $old = Join-Path $PSScriptRoot $o
-            if (Test-Path $old) { Rename-Item -Path $old -NewName 'DirToy-Daten'; break }
-        }
-    }
-} catch { }New-Item -ItemType Directory -Force -Path $script:stateDir | Out-Null
+New-Item -ItemType Directory -Force -Path $script:stateDir | Out-Null
 $script:logFile = Join-Path $script:dataDir 'sync.log'
 $script:logOn = $false
 Limit-Log $script:logFile
@@ -1351,7 +1383,7 @@ function Show-Help {
     HelpH 'Updates'
     HelpP 'Beim Start fragt DirToy im Hintergrund bei GitHub nach einer neueren Version (nur die Versionsnummer wird abgefragt, es werden keine Daten von dir gesendet). Gibt es eine, erscheint links der Button "Update verfügbar". Dort kannst du "Jetzt aktualisieren" wählen (lädt DirToy.ps1 aus dem Release, prüft sie, sichert die alte Datei als DirToy.ps1.bak-<Version> und startet neu) oder die Release-Seite im Browser öffnen. Ein Klick auf "Updates prüfen" unter dem Titel sucht von Hand; dort lässt sich die automatische Suche auch abschalten. Aufgaben im Aufgabenplaner suchen nie nach Updates.'
     HelpH 'Wo liegen meine Daten?'
-    HelpP 'Aufgaben und Zeitpläne stehen in DirToy-Daten\aufgaben.json neben dem Programm. Verschiebst du DirToy.ps1, speichere die Zeitpläne danach einmal neu. Bei Startproblemen steht der Grund in DirToy-Daten\fehler.log.'
+    HelpP 'Aufgaben und Zeitpläne stehen in DirToy-Daten\aufgaben.json neben dem Programm. Darf DirToy dort nicht schreiben (z. B. in C:\Program Files ohne Administratorrechte), nutzt es automatisch den Ordner %APPDATA%\DirToy und übernimmt vorhandene Aufgaben dorthin. Verschiebst du DirToy.ps1, speichere die Zeitpläne danach einmal neu. Bei Startproblemen steht der Grund in DirToy-Daten\fehler.log.'
     $rb.SelectionStart = 0; $rb.ScrollToCaret()
     $bs = New-Btn $d 24 584 200 36 'Desktop-Verknüpfung' $false $th.Surface; $bs.Anchor = $A_BL
     $bs.Add_Click({

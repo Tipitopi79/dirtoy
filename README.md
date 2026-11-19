@@ -32,7 +32,7 @@ Windows 10 oder 11 (Windows PowerShell 5.1 ist enthalten). Keine Installation n�
 
 Das Programm-Icon ist in `DirToy.ps1` eingebaut (Fenster, Taskleiste, Benachrichtigung). Beim allerersten Start fragt DirToy, ob eine Verkn체pfung mit Icon auf dem Desktop angelegt werden soll (sp채ter jederzeit 체ber den Button **Desktop-Verkn체pfung** im Hilfe-Fenster). Sie startet DirToy ganz ohne aufblitzendes Fenster (체ber `conhost.exe --headless`, ein Windows-Bordmittel). Beim Doppelklick auf `DirToy.cmd` blitzt dagegen kurz ein Fenster auf, das l채sst sich bei Batch-Dateien nicht vermeiden.
 
-Beim ersten Start wird der Ordner `DirToy-Daten` angelegt (Aufgaben, Zeitpl채ne, Protokoll).
+Beim ersten Start wird der Ordner `DirToy-Daten` angelegt (Aufgaben, Zeitpl채ne, Protokoll). Darf DirToy neben dem Programm nicht schreiben (z. B. in `C:\Program Files` ohne Administratorrechte), legt es die Daten automatisch unter `%APPDATA%\DirToy` ab. Die automatische Update-Funktion ersetzt `DirToy.ps1` und braucht dort Schreibrechte; ohne sie 체ber die Release-Seite aktualisieren.
 Wurde die ZIP-Datei aus dem Internet geladen, ggf. vorher in den Dateieigenschaften "Zulassen" anhaken.
 Die Skripte sind nicht signiert, Windows kann daher eine Warnung zeigen.
 
