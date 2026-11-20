@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.7.1'
+$script:version = '1.7.2'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -293,7 +293,11 @@ function Build-Plan($t) {
     $final.AddRange($mk)
     $final.AddRange($plan)
     foreach ($x in ($rm | Sort-Object { $_.Rel.Length } -Descending)) { $final.Add($x) }
-    return [pscustomobject]@{ Plan = $final; A = $rootA; B = $rootB; Pats = $pats; ExDirs = $exDirs }
+    # Was beim Einlesen auf beiden Seiten lag - Grundlage fuer den neuen Zustand nach dem Lauf
+    $both = New-DirSet
+    foreach ($k in $da.Keys) { if ($db.ContainsKey($k)) { [void]$both.Add($k) } }
+    foreach ($k in $dsA) { if ($dsB.Contains($k)) { [void]$both.Add($k) } }
+    return [pscustomobject]@{ Plan = $final; A = $rootA; B = $rootB; Pats = $pats; ExDirs = $exDirs; Both = $both; State = $state }
 }
 
 # ---------------------------------------------------------------- Plan ausführen
@@ -340,15 +344,29 @@ function Copy-One($src, $dst) {
 function Delete-One($path) {
     [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($path, 'OnlyErrorDialogs', 'SendToRecycleBin')
 }
-function Update-State($t, $r) {
-    $da = New-Dict; $db = New-Dict; $dsA = New-DirSet; $dsB = New-DirSet
-    $script:exDirs = $r.ExDirs
-    Scan-Dir (New-Object System.IO.DirectoryInfo $r.A) '' $r.Pats $da $dsA
-    Scan-Dir (New-Object System.IO.DirectoryInfo $r.B) '' $r.Pats $db $dsB
-    $both = New-Object System.Collections.Generic.List[string]
-    foreach ($k in $da.Keys) { if ($db.ContainsKey($k)) { $both.Add($k) } }
-    foreach ($k in $dsA) { if ($dsB.Contains($k)) { $both.Add($k) } }
-    Save-State $t.Id $both
+# Neuer Zustand aus dem Ergebnis des Laufs (kein erneutes Einlesen: ein anderer PC, der waehrenddessen
+# im selben Ordner loescht, wuerde sonst die Liste verfaelschen und Geloeschtes kaeme zurueck).
+# Erfolgreich kopiert/angelegt -> jetzt auf beiden Seiten. Fehlgeschlagen, uebersprungen oder durch Abbruch
+# nicht mehr ausgefuehrt -> bleibt auf dem alten Stand, damit der naechste Lauf es richtig wiederholt.
+function Save-RunState($t, $r, [bool[]]$ok) {
+    $set = New-DirSet
+    $set.UnionWith($r.Both)
+    $plan = $r.Plan
+    for ($j = 0; $j -lt $plan.Count; $j++) {
+        $p = $plan[$j]
+        if ($ok -and $ok[$j]) {
+            switch ($p.Typ) {
+                'Copy'  {
+                    [void]$set.Add($p.Rel)
+                    $parts = $p.Rel.Split('\'); $acc = ''
+                    for ($k = 0; $k -lt $parts.Length - 1; $k++) { $acc += $parts[$k] + '\'; [void]$set.Add($acc) }
+                }
+                'MkDir' { [void]$set.Add($p.Rel) }
+                default { [void]$set.Remove($p.Rel) }   # Delete/RmDir: jetzt auf keiner Seite mehr
+            }
+        } elseif ($r.State.Contains($p.Rel)) { [void]$set.Add($p.Rel) }
+    }
+    Save-State $t.Id $set
 }
 
 # ---------------------------------------------------------------- Log-Ausgabe
@@ -426,7 +444,7 @@ function Run-Task($t, [bool]$preview) {
     }
     $plan = $r.Plan
     $dels = @($plan | Where-Object { $_.Typ -eq 'Delete' -or $_.Typ -eq 'RmDir' }).Count
-    if ($plan.Count -eq 0) { if (-not $preview) { try { Update-State $t $r } catch { } }; [void](Add-Log "Aufgabe '$($t.Name)'" 'Bereits synchron - nichts zu tun.' ''); return @{ Copied = 0; Deleted = 0; Errors = 0 } }
+    if ($plan.Count -eq 0) { if (-not $preview) { try { Save-RunState $t $r $null } catch { } }; [void](Add-Log "Aufgabe '$($t.Name)'" 'Bereits synchron - nichts zu tun.' ''); return @{ Copied = 0; Deleted = 0; Errors = 0 } }
 
     $uiMax = 2000   # mehr Zeilen machen die Liste langsam; vollstaendig steht alles im Protokoll
     if ($preview) {
@@ -455,6 +473,7 @@ function Run-Task($t, [bool]$preview) {
     $copied = 0; $deleted = 0; $errors = 0; $i = 0; $cancelled = $false; $lastPump = [Environment]::TickCount - 1000
     $errList = New-Object System.Collections.Generic.List[string]; $script:bulk = $true
     $resItems = New-Object System.Collections.Generic.List[object]; $sum = [ordered]@{}; $bytes = [long]0; $skipped = 0; $t0 = Get-Date
+    $ok = New-Object bool[] $plan.Count   # welche Aktionen erfolgreich waren (fuer den Zustand)
     foreach ($p in $plan) {
         if ($script:cancel) { $cancelled = $true; break }
         $i++
@@ -490,6 +509,7 @@ function Run-Task($t, [bool]$preview) {
                 'Conflict' { $st = 'übersprungen' }
             }
             if ($script:logOn) { Write-LogLine $p.Text $p.Rel $st }
+            if ($st -eq 'OK') { $ok[$i - 1] = $true }
             if ($st -eq 'OK') { if ($sum.Contains($p.Text)) { $sum[$p.Text]++ } else { $sum[$p.Text] = 1 } } elseif ($st -like 'übersprungen*') { $skipped++ }
             if (-not $script:headless) { $resItems.Add(@($p.Text, $p.Rel, $st)) }
             if ($it) { $it.SubItems[2].Text = $st; $it.ForeColor = (Get-StatusColor $st) }
@@ -518,11 +538,11 @@ function Run-Task($t, [bool]$preview) {
         [void](Add-Log "Anzeige zeigt nur die letzten $uiMax Aktionen" 'Alle Aktionen stehen im Protokoll (sync.log)' '')
         if ($errList.Count -gt 0) { [void](Add-Log "Fehler dieses Laufs ($errors, höchstens 50 hier gelistet)" '' ''); foreach ($e in $errList) { [void](Add-Log $e '' '') } }
     }
+    try { Save-RunState $t $r $ok } catch { [void](Add-Log 'Warnung' 'Zustand konnte nicht gespeichert werden' $_.Exception.Message) }
     if ($cancelled) {
         [void](Add-Log "Aufgabe '$($t.Name)' abgebrochen" "$copied kopiert, $deleted gelöscht, $errors Fehler - Lauf unvollständig, keine halben Dateien" '')
         return @{ Copied = $copied; Deleted = $deleted; Errors = $errors; Cancelled = $true }
     }
-    if ($errors -eq 0) { try { Update-State $t $r } catch { [void](Add-Log 'Warnung' 'Zustand konnte nicht gespeichert werden' $_.Exception.Message) } }
     Set-Progress 1
     [void](Add-Log "Aufgabe '$($t.Name)' fertig" "$copied kopiert, $deleted gelöscht, $errors Fehler" '')
     return @{ Copied = $copied; Deleted = $deleted; Errors = $errors }
