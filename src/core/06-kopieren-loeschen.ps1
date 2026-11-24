@@ -16,7 +16,7 @@ function Copy-One($src, $dst) {
             if ($script:cancel) { throw 'DIRTOY_CANCEL' }
             if (([Environment]::TickCount - $last) -ge $script:pumpMs) {
                 $last = [Environment]::TickCount
-                if ($script:lblStatus -and $total -gt 8MB) { $script:lblStatus.Text = "Kopiere $([System.IO.Path]::GetFileName($src)): $([int](100 * $done / $total)) %" }
+                if ($total -gt 8MB) { Out-Status "Kopiere $([System.IO.Path]::GetFileName($src)): $([int](100 * $done / $total)) %" }
                 Pump
             }
         }

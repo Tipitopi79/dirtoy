@@ -33,7 +33,7 @@ function Build-Plan($t) {
     foreach ($rel in $keys) {
         $idx++
         if (($idx -band 2047) -eq 0) {
-            if ($script:lblStatus) { $script:lblStatus.Text = "Vergleiche ... $idx / $total" }
+            Out-Status "Vergleiche ... $idx / $total"
             Pump
             if ($script:cancel) { throw 'DIRTOY_CANCEL' }
         }

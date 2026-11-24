@@ -90,6 +90,5 @@ $script:results = New-Object System.Collections.Generic.List[object]   # Ergebni
 $script:tasks = @()
 $script:cur = $null
 $script:loading = $false
-$script:lv = $null
 $script:scriptPath = $PSCommandPath
 

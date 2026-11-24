@@ -45,11 +45,21 @@ try {
     Check 'Sync: ganzer Ordner geloescht -> 2 Dateien + 2 Ordner loeschen' ((Dels (Build-Plan $t).Plan) -eq 4)
 
     # --- Fortschrittsbalken (rundete frueher auf ganz leer oder ganz voll)
-    $script:progTrack = @{ Width = 1000 }; $script:progFill = @{ Width = -1 }
     foreach ($c in @(0, 0), @(0.35, 350), @(0.5, 500), @(0.9, 900), @(1, 1000), @(2, 1000)) {
-        Set-Progress $c[0]; Check "Fortschritt $($c[0]) -> $($c[1])" ($script:progFill.Width -eq $c[1])
+        Check "Fortschritt $($c[0]) -> $($c[1])" ((Get-BarWidth 1000 $c[0]) -eq $c[1])
     }
-    $script:progTrack = $null; $script:progFill = $null
+
+    # --- Kern und Oberflaeche getrennt
+    $src = Join-Path (Split-Path $PSScriptRoot) 'src'
+    foreach ($f in [IO.Directory]::GetFiles("$src\core", '*.ps1')) {
+        if ([IO.Path]::GetFileName($f) -match '^(01|11)-') { continue }   # Absturzmeldung und Benachrichtigung duerfen Fenster nutzen
+        Check "Kern ohne Oberflaeche: $([IO.Path]::GetFileName($f))" ([IO.File]::ReadAllText($f) -notmatch 'Windows\.Forms|script:lv\b|lblStatus|progFill|progTrack|Show-Msg|Get-StatusColor|SubItems|\$form\b|\$th\b')
+    }
+    $gui = [IO.File]::ReadAllText("$src\gui\06b-anzeige.ps1")
+    foreach ($fn in 'Out-Status', 'Set-Progress', 'Out-Row', 'Set-RowStatus', 'Set-RowFile', 'Start-Bulk', 'Stop-Bulk', 'Limit-Rows', 'Pump', 'Ask-User') {
+        Check "Meldestelle $fn in der Oberflaeche" ($gui -match "function $fn\b")
+    }
+    Check 'Rueckfrage ohne Fenster = Nein' (-not (Ask-User 'x' 'x' $false))
 
     # --- geaenderte Dateien, Ausschluesse
     foreach ($c in @(0, 'A', 'A'), @(0, 'B', 'B'), @(1, 'A', 'A'), @(1, 'B', 'A'), @(2, 'A', 'A'), @(2, 'B', '')) {

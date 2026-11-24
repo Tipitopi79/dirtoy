@@ -16,7 +16,7 @@ function Scan-Dir([System.IO.DirectoryInfo]$dir, [string]$rel, $pats, $dict, $di
     foreach ($e in $entries) {
         $script:scanCount++
         if (($script:scanCount % 300) -eq 0) {
-            if ($script:lblStatus) { $script:lblStatus.Text = "Lese Ordner ein ... ($($script:scanCount) Einträge)" }
+            Out-Status "Lese Ordner ein ... ($($script:scanCount) Einträge)"
             Pump
             if ($script:cancel -and $script:inPlan) { throw 'DIRTOY_CANCEL' }
         }

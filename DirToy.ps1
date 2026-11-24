@@ -90,7 +90,6 @@ $script:results = New-Object System.Collections.Generic.List[object]   # Ergebni
 $script:tasks = @()
 $script:cur = $null
 $script:loading = $false
-$script:lv = $null
 $script:scriptPath = $PSCommandPath
 
 # ---------------------------------------------------------------- Aufgaben speichern/laden
@@ -167,7 +166,7 @@ function Scan-Dir([System.IO.DirectoryInfo]$dir, [string]$rel, $pats, $dict, $di
     foreach ($e in $entries) {
         $script:scanCount++
         if (($script:scanCount % 300) -eq 0) {
-            if ($script:lblStatus) { $script:lblStatus.Text = "Lese Ordner ein ... ($($script:scanCount) Einträge)" }
+            Out-Status "Lese Ordner ein ... ($($script:scanCount) Einträge)"
             Pump
             if ($script:cancel -and $script:inPlan) { throw 'DIRTOY_CANCEL' }
         }
@@ -233,7 +232,7 @@ function Build-Plan($t) {
     foreach ($rel in $keys) {
         $idx++
         if (($idx -band 2047) -eq 0) {
-            if ($script:lblStatus) { $script:lblStatus.Text = "Vergleiche ... $idx / $total" }
+            Out-Status "Vergleiche ... $idx / $total"
             Pump
             if ($script:cancel) { throw 'DIRTOY_CANCEL' }
         }
@@ -341,7 +340,7 @@ function Copy-One($src, $dst) {
             if ($script:cancel) { throw 'DIRTOY_CANCEL' }
             if (([Environment]::TickCount - $last) -ge $script:pumpMs) {
                 $last = [Environment]::TickCount
-                if ($script:lblStatus -and $total -gt 8MB) { $script:lblStatus.Text = "Kopiere $([System.IO.Path]::GetFileName($src)): $([int](100 * $done / $total)) %" }
+                if ($total -gt 8MB) { Out-Status "Kopiere $([System.IO.Path]::GetFileName($src)): $([int](100 * $done / $total)) %" }
                 Pump
             }
         }
@@ -396,26 +395,28 @@ function Save-RunState($t, $r, [bool[]]$ok) {
 function Write-LogLine([string]$aktion, [string]$datei, [string]$status) {
     try { [System.IO.File]::AppendAllText($script:logFile, ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' | ' + $aktion + ' | ' + $datei + ' | ' + $status + "`r`n"), [System.Text.Encoding]::UTF8) } catch { }
 }
-function Set-Progress([double]$frac) {
-    if (-not $script:progFill) { return }
-    $w = [int]($script:progTrack.Width * [math]::Max(0.0, [math]::Min(1.0, $frac)))
-    $script:progFill.Width = $w
-}
 function Add-Log([string]$aktion, [string]$datei, [string]$status) {
     if ($script:logOn -and $status -ne '...') { Write-LogLine $aktion $datei $status }
-    if ($script:lv) {
-        $it = New-Object System.Windows.Forms.ListViewItem($aktion)
-        [void]$it.SubItems.Add($datei); [void]$it.SubItems.Add($status)
-        $c = Get-StatusColor $status; if ($c) { $it.ForeColor = $c }
-        [void]$script:lv.Items.Add($it)
-        if (-not $script:bulk) { $it.EnsureVisible() }
-        return $it
-    } else {
-        Write-Host "$aktion | $datei | $status"
-        return $null
-    }
+    return (Out-Row $aktion $datei $status)
 }
-function Pump { if (-not $NoGui) { [System.Windows.Forms.Application]::DoEvents() } }
+
+# ---- Meldestellen: Nur hierueber spricht der Kern mit der Aussenwelt. Das hier ist die Fassung ohne Fenster;
+# gui\06b-anzeige.ps1 ersetzt diese Funktionen durch die Fassung mit Fenster.
+function Out-Status([string]$text) { }                                # Statuszeile
+function Set-Progress([double]$frac) { }                              # Fortschritt 0..1
+function Out-Row([string]$aktion, [string]$datei, [string]$status) {  # neue Zeile; Rueckgabe: Zeile oder $null
+    Write-Host "$aktion | $datei | $status"
+    return $null
+}
+function Set-RowStatus($row, [string]$status) { }                     # Status einer Zeile aendern
+function Set-RowFile($row, [string]$path) { }                         # Datei, die ein Doppelklick auf die Zeile oeffnet
+function Start-Bulk { }                                               # viele Zeilen am Stueck: Anfang ...
+function Stop-Bulk { }                                                # ... und Ende
+function Limit-Rows([int]$max, [bool]$scroll) { }                     # hoechstens $max Zeilen behalten, aelteste zuerst weg
+function Pump { }                                                     # Oberflaeche zwischendurch bedienen
+function Ask-User([string]$text, [string]$title, [bool]$defaultNo) { return $false }   # Rueckfrage; ohne Fenster immer Nein
+# Breite des Fortschrittsbalkens (0.0/1.0: mit 0/1 rundet PowerShell auf ganze Zahlen)
+function Get-BarWidth([int]$width, [double]$frac) { return [int]($width * [math]::Max(0.0, [math]::Min(1.0, $frac))) }
 
 # Vollstaendige Vorschau als CSV (Semikolon, UTF-8 mit BOM: oeffnet in Excel mit richtigen Umlauten und Spalten); Rueckgabe: Pfad oder $null
 function Write-PreviewFile($t, $plan) {
@@ -448,7 +449,7 @@ function Run-Task($t, [bool]$preview) {
     $script:logOn = (-not $preview)
     if (-not $preview) { Limit-Log $script:logFile; Write-LogLine ("=== Aufgabe '" + $t.Name + "' (" + $(if ($script:headless) { 'automatisch' } else { 'manuell' }) + ', DirToy ' + $script:version + ')') '' '' }
     Set-Progress 0
-    if ($script:lblStatus) { $script:lblStatus.Text = "Analysiere '$($t.Name)' ..." }
+    Out-Status "Analysiere '$($t.Name)' ..."
     Pump
     try { $r = Build-Plan $t }
     catch {
@@ -473,17 +474,17 @@ function Run-Task($t, [bool]$preview) {
     if ($preview) {
         if ($r.Mass) { [void](Add-Log 'Warnung' "Auffällig viele Löschungen: $($r.Mass)" 'bitte prüfen') }
         $script:bulk = $true
-        if ($script:lv) { $script:lv.BeginUpdate() }
+        Start-Bulk
         try {
             $n = 0
             foreach ($p in $plan) { $n++; if ($n -gt $uiMax) { break }; [void](Add-Log $p.Text $p.Rel 'geplant') }
-        } finally { $script:bulk = $false; if ($script:lv) { $script:lv.EndUpdate() } }
+        } finally { $script:bulk = $false; Stop-Bulk }
         if ($plan.Count -gt $uiMax) {
             $pf = Write-PreviewFile $t $plan
             $cnt = [ordered]@{}; foreach ($p in $plan) { if ($cnt.Contains($p.Text)) { $cnt[$p.Text]++ } else { $cnt[$p.Text] = 1 } }
             foreach ($k in $cnt.Keys) { [void](Add-Log "Insgesamt: $k" ('{0:N0} Aktion(en)' -f $cnt[$k]) '') }
             $it = Add-Log "... und $($plan.Count - $uiMax) weitere Aktionen" $(if ($pf) { '(Doppelklick: komplette Liste als CSV öffnen)' } else { "(Anzeige auf die ersten $uiMax begrenzt)" }) ''
-            if ($it -and $pf) { $it.Tag = $pf }
+            if ($it -and $pf) { Set-RowFile $it $pf }
         }
         [void](Add-Log "Aufgabe '$($t.Name)'" "Vorschau: $($plan.Count) Aktion(en), davon $dels Löschung(en)" '')
         return $null
@@ -494,12 +495,12 @@ function Run-Task($t, [bool]$preview) {
         return $null
     }
     if ($r.Mass) {
-        $ans = (Show-Msg "Aufgabe '$($t.Name)': Auffällig viele Löschungen!`n`n$($r.Mass)`n`nIst das richtige Laufwerk verbunden und der richtige Ordner gewählt?`nTrotzdem löschen? (Papierkorb, sofern möglich)" 'Auffällig viele Löschungen' 'YesNo' 'Warning' 'Button2')
-        if ($ans -ne 'Yes') { [void](Add-Log "Aufgabe '$($t.Name)'" '' 'Abgebrochen.'); return $null }
+        $ans = (Ask-User "Aufgabe '$($t.Name)': Auffällig viele Löschungen!`n`n$($r.Mass)`n`nIst das richtige Laufwerk verbunden und der richtige Ordner gewählt?`nTrotzdem löschen? (Papierkorb, sofern möglich)" 'Auffällig viele Löschungen' $true)
+        if (-not $ans) { [void](Add-Log "Aufgabe '$($t.Name)'" '' 'Abgebrochen.'); return $null }
     }
     elseif ($dels -gt 0 -and -not $NoGui) {
-        $ans = (Show-Msg "Aufgabe '$($t.Name)': $dels Datei(en)/Ordner werden gelöscht (Papierkorb, sofern möglich).`nFortfahren?" 'Löschen bestätigen' 'YesNo' 'Warning')
-        if ($ans -ne 'Yes') { [void](Add-Log "Aufgabe '$($t.Name)'" '' 'Abgebrochen.'); return $null }
+        $ans = (Ask-User "Aufgabe '$($t.Name)': $dels Datei(en)/Ordner werden gelöscht (Papierkorb, sofern möglich).`nFortfahren?" 'Löschen bestätigen' $false)
+        if (-not $ans) { [void](Add-Log "Aufgabe '$($t.Name)'" '' 'Abgebrochen.'); return $null }
     }
     $copied = 0; $deleted = 0; $errors = 0; $i = 0; $cancelled = $false; $lastPump = [Environment]::TickCount - 1000
     $errList = New-Object System.Collections.Generic.List[string]; $script:bulk = $true
@@ -510,14 +511,9 @@ function Run-Task($t, [bool]$preview) {
         $i++
         if (([Environment]::TickCount - $lastPump) -gt 100) {
             $lastPump = [Environment]::TickCount
-            if ($script:lblStatus) { $script:lblStatus.Text = "'$($t.Name)': $i / $($plan.Count)  ($([int](100 * $i / $plan.Count)) %)" }
+            Out-Status "'$($t.Name)': $i / $($plan.Count)  ($([int](100 * $i / $plan.Count)) %)"
             Set-Progress ($i / $plan.Count)
-            if ($script:lv -and $script:lv.Items.Count -gt 0) {
-                # Laufendes Fenster: aelteste Zeilen fliegen raus, es bleiben die letzten $uiMax (alles steht im Protokoll)
-                $ex = $script:lv.Items.Count - $uiMax
-                if ($ex -gt 0) { $script:lv.BeginUpdate(); try { for ($k = 0; $k -lt $ex; $k++) { $script:lv.Items.RemoveAt(0) } } finally { $script:lv.EndUpdate() } }
-                $script:lv.EnsureVisible($script:lv.Items.Count - 1)
-            }
+            Limit-Rows $uiMax $true   # laufendes Fenster: es bleiben die letzten $uiMax (alles steht im Protokoll)
             Pump
         }
         $it = $null
@@ -543,13 +539,13 @@ function Run-Task($t, [bool]$preview) {
             if ($st -eq 'OK') { $ok[$i - 1] = $true }
             if ($st -eq 'OK') { if ($sum.Contains($p.Text)) { $sum[$p.Text]++ } else { $sum[$p.Text] = 1 } } elseif ($st -like 'übersprungen*') { $skipped++ }
             if (-not $script:headless) { $resItems.Add(@($p.Text, $p.Rel, $st)) }
-            if ($it) { $it.SubItems[2].Text = $st; $it.ForeColor = (Get-StatusColor $st) }
+            if ($it) { Set-RowStatus $it $st }
         } catch {
             if ($_.Exception.Message -eq 'DIRTOY_CANCEL') {
                 $cancelled = $true
                 if ($script:logOn) { Write-LogLine $p.Text $p.Rel 'abgebrochen (Zieldatei unverändert)' }
                 if (-not $script:headless) { $resItems.Add(@($p.Text, $p.Rel, 'abgebrochen')) }
-                if ($it) { $it.SubItems[2].Text = 'abgebrochen'; $it.ForeColor = (Get-StatusColor 'abgebrochen') }
+                if ($it) { Set-RowStatus $it 'abgebrochen' }
                 break
             }
             $errors++
@@ -558,14 +554,14 @@ function Run-Task($t, [bool]$preview) {
             if (-not $script:headless) { $resItems.Add(@($p.Text, $p.Rel, $emsg)) }
             if ($it) {
                 if ($script:logOn) { Write-LogLine $p.Text $p.Rel $emsg }
-                $it.SubItems[2].Text = $emsg; $it.ForeColor = (Get-StatusColor 'FEHLER')
+                Set-RowStatus $it $emsg
             } else { [void](Add-Log $p.Text $p.Rel $emsg) }   # Fehler immer anzeigen (Add-Log schreibt auch ins Protokoll)
         }
     }
     $script:bulk = $false
     $script:results.Add([pscustomobject]@{ Name = [string]$t.Name; Items = $resItems; Sum = $sum; Copied = $copied; Deleted = $deleted; Errors = $errors; Skipped = $skipped; Bytes = $bytes; Seconds = ((Get-Date) - $t0).TotalSeconds; Cancelled = $cancelled })
     if ($plan.Count -gt $uiMax) {
-        if ($script:lv) { $script:lv.BeginUpdate(); try { while ($script:lv.Items.Count -gt $uiMax) { $script:lv.Items.RemoveAt(0) } } finally { $script:lv.EndUpdate() } }
+        Limit-Rows $uiMax $false
         [void](Add-Log "Anzeige zeigt nur die letzten $uiMax Aktionen" 'Alle Aktionen stehen im Protokoll (sync.log)' '')
         if ($errList.Count -gt 0) { [void](Add-Log "Fehler dieses Laufs ($errors, höchstens 50 hier gelistet)" '' ''); foreach ($e in $errList) { [void](Add-Log $e '' '') } }
     }
@@ -1238,6 +1234,32 @@ try {
 $form.Add_HandleCreated({
     try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($form.Handle, 20, [ref]$v, 4) } catch { }
 })
+
+# ---- Anzeige: ersetzt die Meldestellen des Kerns (core\07-protokoll.ps1) durch die Fassung mit Fenster
+function Out-Status([string]$text) { $script:lblStatus.Text = $text }
+function Set-Progress([double]$frac) { $script:progFill.Width = (Get-BarWidth $script:progTrack.Width $frac) }
+function Out-Row([string]$aktion, [string]$datei, [string]$status) {
+    $it = New-Object System.Windows.Forms.ListViewItem($aktion)
+    [void]$it.SubItems.Add($datei); [void]$it.SubItems.Add($status)
+    $c = Get-StatusColor $status; if ($c) { $it.ForeColor = $c }
+    [void]$script:lv.Items.Add($it)
+    if (-not $script:bulk) { $it.EnsureVisible() }
+    return $it
+}
+function Set-RowStatus($row, [string]$status) { $row.SubItems[2].Text = $status; $row.ForeColor = (Get-StatusColor $status) }
+function Set-RowFile($row, [string]$path) { $row.Tag = $path }
+function Start-Bulk { $script:lv.BeginUpdate() }
+function Stop-Bulk { $script:lv.EndUpdate() }
+function Limit-Rows([int]$max, [bool]$scroll) {
+    $n = $script:lv.Items.Count
+    if ($n -eq 0) { return }
+    if ($n -gt $max) { $script:lv.BeginUpdate(); try { for ($k = $n - $max; $k -gt 0; $k--) { $script:lv.Items.RemoveAt(0) } } finally { $script:lv.EndUpdate() } }
+    if ($scroll) { $script:lv.EnsureVisible($script:lv.Items.Count - 1) }
+}
+function Pump { [System.Windows.Forms.Application]::DoEvents() }
+function Ask-User([string]$text, [string]$title, [bool]$defaultNo) {
+    return ((Show-Msg $text $title 'YesNo' 'Warning' $(if ($defaultNo) { 'Button2' } else { 'Button1' })) -eq 'Yes')
+}
 
 # ---- Anleitung, wenn der Zeitplan nicht angelegt werden konnte (z. B. ohne Admin-Rechte)
 function Show-ManualSchedDialog($t, $s, [string]$err, $owner) {
