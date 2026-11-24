@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.7.2'
+$script:version = '1.7.3'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -770,8 +770,8 @@ elseif ($script:themeSetting -eq 'auto') {
     try { $isDark = ((Get-ItemPropertyValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name AppsUseLightTheme) -eq 0) } catch { }
 }
 if ($isDark) {
-    $script:th = @{ Bg = (C '#202020'); Surface = (C '#2B2B2B'); Input = (C '#1C1C1C'); Text = (C '#F2F2F2'); Muted = (C '#A6A6A6')
-        Border = (C '#454545'); Accent = (C '#4CC2FF'); AccentText = (C '#000000'); AccentHover = (C '#7AD2FF'); SelBg = (C '#3A3A3A')
+    $script:th = @{ Bg = (C '#2D2D30'); Surface = (C '#3A3A3D'); Input = (C '#28282B'); Text = (C '#F2F2F2'); Muted = (C '#B4B4B4')
+        Border = (C '#5A5A5E'); Accent = (C '#4CC2FF'); AccentText = (C '#000000'); AccentHover = (C '#7AD2FF'); SelBg = (C '#4A4A4F')
         Ok = (C '#6CCB5F'); Err = (C '#FF99A4') }
 } else {
     $script:th = @{ Bg = (C '#F3F3F3'); Surface = (C '#FFFFFF'); Input = (C '#FFFFFF'); Text = (C '#1B1B1B'); Muted = (C '#6B6B6B')
