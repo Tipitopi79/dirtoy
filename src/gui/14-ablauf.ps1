@@ -106,33 +106,29 @@ $btnSched.Add_Click({
     if (-not $script:cur) { return }
     Show-ScheduleDialog $script:cur; Update-SchedLabel
 })
-$btnPrev.Add_Click({
-    if (-not $script:cur) { return }
+# Lauf starten; schlaegt schon der Start fehl, wird das Fenster wieder freigegeben
+function Invoke-Run($tasks, [bool]$preview, [string]$doneText, [bool]$showResult) {
+    if ($script:busy) { return }
     Clear-Log; Set-Busy $true
-    try { [void](Run-Task $script:cur $true) } finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Vorschau fertig.' }) }
-})
-$btnRun.Add_Click({
-    if (-not $script:cur) { return }
-    Clear-Log; $script:results.Clear(); Set-Busy $true
-    try { [void](Run-Task $script:cur $false) } finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Fertig.' }) }
-    Show-ResultsIfNeeded
-})
-$btnAll.Add_Click({
-    Clear-Log; $script:results.Clear(); Set-Busy $true
-    try { foreach ($t in @($script:tasks)) { [void](Run-Task $t $false); if ($script:cancel) { break } } }
-    finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Alle Aufgaben abgearbeitet.' }) }
-    Show-ResultsIfNeeded
-})
+    try { Start-SyncJob $tasks $preview $doneText $showResult }
+    catch { $m = $_.Exception.Message; $script:job = $null; $script:brg = $null; Set-Busy $false; [void](Show-Msg "Der Lauf konnte nicht gestartet werden:`n`n$m" 'DirToy' 'OK' 'Error') }
+}
+$btnPrev.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $true 'Vorschau fertig.' $false } })
+$btnRun.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $false 'Fertig.' $true } })
+$btnAll.Add_Click({ Invoke-Run @($script:tasks) $false 'Alle Aufgaben abgearbeitet.' $true })
 $btnCancel.Add_Click({
-    $script:cancel = $true; $btnCancel.Enabled = $false; $btnCancel.Text = 'Bricht ab ...'
+    Request-Cancel; $btnCancel.Enabled = $false; $btnCancel.Text = 'Bricht ab ...'
     $lbl.Text = 'Wird nach der aktuellen Datei abgebrochen ...'
 })
 $form.Add_FormClosing({
     param($s, $e)
     if ($script:busy) {
         $q = "Es läuft noch ein Vorgang.`nJetzt abbrechen und beenden?`n`nDas Programm beendet sich nach der aktuellen Datei. Es bleiben keine halben Dateien zurück."
-        if ((Show-Msg $q 'DirToy' 'YesNo' 'Question') -eq 'Yes') { $script:cancel = $true; $script:closeRequested = $true }
         $e.Cancel = $true
+        if ($script:asking) { return }
+        $script:asking = $true   # solange die Frage offen ist, wird der Lauf nicht abgeschlossen
+        try { if ((Show-Msg $q 'DirToy' 'YesNo' 'Question') -eq 'Yes') { Request-Cancel; $script:closeRequested = $true } }
+        finally { $script:asking = $false }
     }
 })
 

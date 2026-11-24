@@ -13,7 +13,7 @@ function Copy-One($src, $dst) {
         $total = $in.Length; $done = 0; $last = [Environment]::TickCount
         while (($n = $in.Read($script:copyBuf, 0, $script:copyBuf.Length)) -gt 0) {
             $out.Write($script:copyBuf, 0, $n); $done += $n
-            if ($script:cancel) { throw 'DIRTOY_CANCEL' }
+            if (Test-Cancel) { throw 'DIRTOY_CANCEL' }
             if (([Environment]::TickCount - $last) -ge $script:pumpMs) {
                 $last = [Environment]::TickCount
                 if ($total -gt 8MB) { Out-Status "Kopiere $([System.IO.Path]::GetFileName($src)): $([int](100 * $done / $total)) %" }

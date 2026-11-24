@@ -61,7 +61,7 @@
     $resItems = New-Object System.Collections.Generic.List[object]; $sum = [ordered]@{}; $bytes = [long]0; $skipped = 0; $t0 = Get-Date
     $ok = New-Object bool[] $plan.Count   # welche Aktionen erfolgreich waren (fuer den Zustand)
     foreach ($p in $plan) {
-        if ($script:cancel) { $cancelled = $true; break }
+        if (Test-Cancel) { $cancelled = $true; break }
         $i++
         if (([Environment]::TickCount - $lastPump) -gt 100) {
             $lastPump = [Environment]::TickCount

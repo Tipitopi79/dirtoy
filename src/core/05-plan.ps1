@@ -35,7 +35,7 @@ function Build-Plan($t) {
         if (($idx -band 2047) -eq 0) {
             Out-Status "Vergleiche ... $idx / $total"
             Pump
-            if ($script:cancel) { throw 'DIRTOY_CANCEL' }
+            if (Test-Cancel) { throw 'DIRTOY_CANCEL' }
         }
         if ($unread.Count -and (Test-Unread $rel $unread)) { continue }
         $fa = $null; $fb = $null

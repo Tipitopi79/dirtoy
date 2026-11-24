@@ -1,4 +1,4 @@
-﻿# ---- Anzeige: ersetzt die Meldestellen des Kerns (core\07-protokoll.ps1) durch die Fassung mit Fenster
+﻿# ---- Anzeige: zeichnet, was der Sync-Thread meldet (laeuft nur im Fenster-Thread)
 function Out-Status([string]$text) { $script:lblStatus.Text = $text }
 function Set-Progress([double]$frac) { $script:progFill.Width = (Get-BarWidth $script:progTrack.Width $frac) }
 function Out-Row([string]$aktion, [string]$datei, [string]$status) {
@@ -19,7 +19,6 @@ function Limit-Rows([int]$max, [bool]$scroll) {
     if ($n -gt $max) { $script:lv.BeginUpdate(); try { for ($k = $n - $max; $k -gt 0; $k--) { $script:lv.Items.RemoveAt(0) } } finally { $script:lv.EndUpdate() } }
     if ($scroll) { $script:lv.EnsureVisible($script:lv.Items.Count - 1) }
 }
-function Pump { [System.Windows.Forms.Application]::DoEvents() }
 function Ask-User([string]$text, [string]$title, [bool]$defaultNo) {
     return ((Show-Msg $text $title 'YesNo' 'Warning' $(if ($defaultNo) { 'Button2' } else { 'Button1' })) -eq 'Yes')
 }

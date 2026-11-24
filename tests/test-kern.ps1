@@ -55,9 +55,9 @@ try {
         if ([IO.Path]::GetFileName($f) -match '^(01|11)-') { continue }   # Absturzmeldung und Benachrichtigung duerfen Fenster nutzen
         Check "Kern ohne Oberflaeche: $([IO.Path]::GetFileName($f))" ([IO.File]::ReadAllText($f) -notmatch 'Windows\.Forms|script:lv\b|lblStatus|progFill|progTrack|Show-Msg|Get-StatusColor|SubItems|\$form\b|\$th\b')
     }
-    $gui = [IO.File]::ReadAllText("$src\gui\06b-anzeige.ps1")
-    foreach ($fn in 'Out-Status', 'Set-Progress', 'Out-Row', 'Set-RowStatus', 'Set-RowFile', 'Start-Bulk', 'Stop-Bulk', 'Limit-Rows', 'Pump', 'Ask-User') {
-        Check "Meldestelle $fn in der Oberflaeche" ($gui -match "function $fn\b")
+    $gui = [IO.File]::ReadAllText("$src\gui\06c-sync-thread.ps1")
+    foreach ($fn in 'Out-Status', 'Set-Progress', 'Out-Row', 'Set-RowStatus', 'Set-RowFile', 'Start-Bulk', 'Stop-Bulk', 'Limit-Rows', 'Pump', 'Test-Cancel', 'Ask-User') {
+        Check "Meldestelle $fn im Sync-Thread" ($gui -match "function $fn\b")
     }
     Check 'Rueckfrage ohne Fenster = Nein' (-not (Ask-User 'x' 'x' $false))
 

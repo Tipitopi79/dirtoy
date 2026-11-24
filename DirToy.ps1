@@ -168,7 +168,7 @@ function Scan-Dir([System.IO.DirectoryInfo]$dir, [string]$rel, $pats, $dict, $di
         if (($script:scanCount % 300) -eq 0) {
             Out-Status "Lese Ordner ein ... ($($script:scanCount) Einträge)"
             Pump
-            if ($script:cancel -and $script:inPlan) { throw 'DIRTOY_CANCEL' }
+            if ($script:inPlan -and (Test-Cancel)) { throw 'DIRTOY_CANCEL' }
         }
         if ($e -isnot [System.IO.DirectoryInfo] -and $e.Name.EndsWith($script:tmpSuffix, [StringComparison]::OrdinalIgnoreCase)) {
             if ($null -ne $script:tmpFiles) { $script:tmpFiles.Add($e.FullName) }
@@ -234,7 +234,7 @@ function Build-Plan($t) {
         if (($idx -band 2047) -eq 0) {
             Out-Status "Vergleiche ... $idx / $total"
             Pump
-            if ($script:cancel) { throw 'DIRTOY_CANCEL' }
+            if (Test-Cancel) { throw 'DIRTOY_CANCEL' }
         }
         if ($unread.Count -and (Test-Unread $rel $unread)) { continue }
         $fa = $null; $fb = $null
@@ -337,7 +337,7 @@ function Copy-One($src, $dst) {
         $total = $in.Length; $done = 0; $last = [Environment]::TickCount
         while (($n = $in.Read($script:copyBuf, 0, $script:copyBuf.Length)) -gt 0) {
             $out.Write($script:copyBuf, 0, $n); $done += $n
-            if ($script:cancel) { throw 'DIRTOY_CANCEL' }
+            if (Test-Cancel) { throw 'DIRTOY_CANCEL' }
             if (([Environment]::TickCount - $last) -ge $script:pumpMs) {
                 $last = [Environment]::TickCount
                 if ($total -gt 8MB) { Out-Status "Kopiere $([System.IO.Path]::GetFileName($src)): $([int](100 * $done / $total)) %" }
@@ -401,7 +401,7 @@ function Add-Log([string]$aktion, [string]$datei, [string]$status) {
 }
 
 # ---- Meldestellen: Nur hierueber spricht der Kern mit der Aussenwelt. Das hier ist die Fassung ohne Fenster;
-# gui\06b-anzeige.ps1 ersetzt diese Funktionen durch die Fassung mit Fenster.
+# gui\06c-sync-thread.ps1 ersetzt diese Funktionen im Sync-Thread durch die Fassung mit Fenster.
 function Out-Status([string]$text) { }                                # Statuszeile
 function Set-Progress([double]$frac) { }                              # Fortschritt 0..1
 function Out-Row([string]$aktion, [string]$datei, [string]$status) {  # neue Zeile; Rueckgabe: Zeile oder $null
@@ -413,6 +413,7 @@ function Set-RowFile($row, [string]$path) { }                         # Datei, d
 function Start-Bulk { }                                               # viele Zeilen am Stueck: Anfang ...
 function Stop-Bulk { }                                                # ... und Ende
 function Limit-Rows([int]$max, [bool]$scroll) { }                     # hoechstens $max Zeilen behalten, aelteste zuerst weg
+function Test-Cancel { return $script:cancel }                         # Abbruch gewuenscht?
 function Pump { }                                                     # Oberflaeche zwischendurch bedienen
 function Ask-User([string]$text, [string]$title, [bool]$defaultNo) { return $false }   # Rueckfrage; ohne Fenster immer Nein
 # Breite des Fortschrittsbalkens (0.0/1.0: mit 0/1 rundet PowerShell auf ganze Zahlen)
@@ -507,7 +508,7 @@ function Run-Task($t, [bool]$preview) {
     $resItems = New-Object System.Collections.Generic.List[object]; $sum = [ordered]@{}; $bytes = [long]0; $skipped = 0; $t0 = Get-Date
     $ok = New-Object bool[] $plan.Count   # welche Aktionen erfolgreich waren (fuer den Zustand)
     foreach ($p in $plan) {
-        if ($script:cancel) { $cancelled = $true; break }
+        if (Test-Cancel) { $cancelled = $true; break }
         $i++
         if (([Environment]::TickCount - $lastPump) -gt 100) {
             $lastPump = [Environment]::TickCount
@@ -779,6 +780,9 @@ function Install-Update($info, [string]$target, [string]$sourceUrl) {
     } finally { if (Test-Path $neu) { Remove-Item $neu -Force -ErrorAction SilentlyContinue } }
 }
 if ($NoGui) { return }
+# Kern-Funktionen merken (Name und Text): der Sync-Thread bekommt genau diese, nicht die Datei auf der Platte
+# (die koennte inzwischen durch ein Update ersetzt sein)
+$script:coreFns = @(Get-ChildItem function: | Where-Object { $_.ScriptBlock.File -eq $PSCommandPath } | ForEach-Object { , @($_.Name, $_.Definition) })
 
 # ================================================================ GUI
 Load-Tasks
@@ -1235,7 +1239,7 @@ $form.Add_HandleCreated({
     try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($form.Handle, 20, [ref]$v, 4) } catch { }
 })
 
-# ---- Anzeige: ersetzt die Meldestellen des Kerns (core\07-protokoll.ps1) durch die Fassung mit Fenster
+# ---- Anzeige: zeichnet, was der Sync-Thread meldet (laeuft nur im Fenster-Thread)
 function Out-Status([string]$text) { $script:lblStatus.Text = $text }
 function Set-Progress([double]$frac) { $script:progFill.Width = (Get-BarWidth $script:progTrack.Width $frac) }
 function Out-Row([string]$aktion, [string]$datei, [string]$status) {
@@ -1256,10 +1260,129 @@ function Limit-Rows([int]$max, [bool]$scroll) {
     if ($n -gt $max) { $script:lv.BeginUpdate(); try { for ($k = $n - $max; $k -gt 0; $k--) { $script:lv.Items.RemoveAt(0) } } finally { $script:lv.EndUpdate() } }
     if ($scroll) { $script:lv.EnsureVisible($script:lv.Items.Count - 1) }
 }
-function Pump { [System.Windows.Forms.Application]::DoEvents() }
 function Ask-User([string]$text, [string]$title, [bool]$defaultNo) {
     return ((Show-Msg $text $title 'YesNo' 'Warning' $(if ($defaultNo) { 'Button2' } else { 'Button1' })) -eq 'Yes')
 }
+
+# ---- Sync im eigenen Thread. Der Kern fasst das Fenster nie an: Er legt Meldungen in $brg ab, ein Timer im
+# Fenster-Thread holt sie ab. Zurueck geht nur: Abbruch ($brg.Cancel) und die Antwort auf eine Rueckfrage.
+$script:workerFns = {
+    function Out-Status([string]$text) { $brg.Status = $text }
+    function Set-Progress([double]$frac) { $brg.Frac = $frac }
+    function Out-Row([string]$aktion, [string]$datei, [string]$status) {
+        $script:rowId++
+        $brg.Q.Enqueue(@('row', $script:rowId, $aktion, $datei, $status, [bool]$script:bulk))
+        return $script:rowId
+    }
+    function Set-RowStatus($row, [string]$status) { $brg.Q.Enqueue(@('status', $row, $status)) }
+    function Set-RowFile($row, [string]$path) { $brg.Q.Enqueue(@('file', $row, $path)) }
+    function Start-Bulk { }
+    function Stop-Bulk { }
+    function Limit-Rows([int]$max, [bool]$scroll) { $brg.Q.Enqueue(@('limit', $max, $scroll)) }
+    function Test-Cancel { return $brg.Cancel }
+    # Kommt das Fenster nicht nach, wartet der Sync kurz (sonst waechst die Warteschlange unbegrenzt)
+    function Pump { while ($brg.Q.Count -gt 4000 -and -not $brg.Cancel) { [System.Threading.Thread]::Sleep(10) } }
+    function Ask-User([string]$text, [string]$title, [bool]$defaultNo) {
+        $brg.Answer = $false
+        $brg.Ev.Reset()
+        $brg.Ask = @($text, $title, $defaultNo)
+        while (-not $brg.Ev.Wait(200)) { if ($brg.Cancel) { $brg.Ask = $null; return $false } }
+        return ([bool]$brg.Answer -and -not $brg.Cancel)
+    }
+}
+$script:workerRun = {
+    $ErrorActionPreference = 'Stop'
+    try {
+        foreach ($job in $jobs) {
+            [void](Run-Task $job $isPreview)
+            if ($brg.Cancel) { break }
+        }
+    } catch { $brg.Error = [string]$_.Exception.Message; $brg.Stack = ($_ | Out-String) + $_.ScriptStackTrace }
+}
+$script:brg = $null
+$script:job = $null
+$script:rowMap = $null
+$script:asking = $false
+
+# Startet den Lauf; $doneText steht am Ende in der Statuszeile, $showResult: danach das Ergebnis-Fenster
+function Start-SyncJob($tasks, [bool]$preview, [string]$doneText, [bool]$showResult) {
+    $script:results.Clear()
+    $script:lastFrac = -1.0; $script:lastStatus = ''
+    $script:rowMap = New-Object 'System.Collections.Generic.Dictionary[int,object]'
+    $script:brg = [hashtable]::Synchronized(@{
+        Q = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'); Status = ''; Frac = 0.0; Cancel = $false
+        Ask = $null; Answer = $false; Ev = (New-Object System.Threading.ManualResetEventSlim); Error = ''; Stack = '' })
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    foreach ($f in $script:coreFns) { $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($f[0], $f[1]))) }
+    $vars = @{ brg = $script:brg; NoGui = $false; headless = $false; cancel = $false; bulk = $false; inPlan = $false; scanCount = 0; tmpFiles = $null; copyBuf = $null; rowId = 0; logOn = $false
+        version = $script:version; tmpSuffix = $script:tmpSuffix; pumpMs = $script:pumpMs; dataDir = $script:dataDir; stateDir = $script:stateDir; logFile = $script:logFile; errLog = $script:errLog
+        warn = (New-Object System.Collections.Generic.List[string]); results = (New-Object System.Collections.Generic.List[object]) }
+    foreach ($k in $vars.Keys) { $iss.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry($k, $vars[$k], ''))) }
+    # Momentaufnahme der Aufgaben: Aendern im Fenster wirkt erst beim naechsten Lauf
+    $jobs = @(foreach ($t in $tasks) { $c = $t.PSObject.Copy(); $c.ExcludeDirs = [string[]]@($t.ExcludeDirs | Where-Object { $_ }); $c })
+    $rs = [runspacefactory]::CreateRunspace($iss); $rs.ApartmentState = 'STA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
+    $ps = [powershell]::Create(); $ps.Runspace = $rs
+    # ein einziges Skript: AddStatement haengt sich in PowerShell 5.1 mit ReuseThread auf
+    [void]$ps.AddScript("param(`$jobs, `$isPreview)`n" + $script:workerFns.ToString() + "`n" + $script:workerRun.ToString()).AddArgument($jobs).AddArgument($preview)
+    $script:job = @{ Ps = $ps; Rs = $rs; H = $ps.BeginInvoke(); Results = $vars.results; Done = $doneText; Show = $showResult }
+    $script:jobTimer.Start()
+}
+function Request-Cancel {
+    $script:cancel = $true
+    if ($script:brg) { $script:brg.Cancel = $true }
+}
+# Holt Meldungen ab, hoechstens $ms Millisekunden lang
+function Receive-Rows([int]$ms) {
+    $q = $script:brg.Q
+    if ($q.Count -eq 0) { return }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew(); $m = $null; $scroll = $false
+    $script:bulk = $true   # waehrenddessen nicht bei jeder Zeile scrollen
+    $script:lv.BeginUpdate()
+    try {
+        while ($sw.ElapsedMilliseconds -lt $ms -and $q.TryDequeue([ref]$m)) {
+            switch ($m[0]) {
+                'row'    { $script:rowMap[$m[1]] = Out-Row $m[2] $m[3] $m[4]; if (-not $m[5]) { $scroll = $true } }
+                'status' { Set-RowStatus $script:rowMap[$m[1]] $m[2] }
+                'file'   { Set-RowFile $script:rowMap[$m[1]] $m[2] }
+                'limit'  { Limit-Rows $m[1] $false; if ($m[2]) { $scroll = $true } }
+            }
+        }
+    } finally { $script:lv.EndUpdate(); $script:bulk = $false }
+    if ($scroll -and $script:lv.Items.Count -gt 0) { $script:lv.EnsureVisible($script:lv.Items.Count - 1) }
+}
+function Update-Job {
+    if (-not $script:job) { return }
+    $b = $script:brg
+    $finished = $script:job.H.IsCompleted   # vor dem Abholen pruefen: danach kommt nichts mehr dazu
+    if ($b.Frac -ne $script:lastFrac) { $script:lastFrac = $b.Frac; Set-Progress $script:lastFrac }
+    if ($b.Status -ne $script:lastStatus) { $script:lastStatus = $b.Status; Out-Status $script:lastStatus }
+    Receive-Rows $(if ($finished) { 60 } else { 25 })
+    if ($b.Ask -and -not $script:asking) {
+        $script:asking = $true
+        $a = $b.Ask
+        try { $b.Answer = (Ask-User $a[0] $a[1] $a[2]) } catch { $b.Answer = $false } finally { $b.Ask = $null; $script:asking = $false; $b.Ev.Set() }
+        return
+    }
+    if ($finished -and $b.Q.Count -eq 0 -and -not $script:asking) { Complete-Job }
+}
+function Complete-Job {
+    $j = $script:job; $b = $script:brg
+    $script:jobTimer.Stop()
+    try { [void]$j.Ps.EndInvoke($j.H) } catch { if (-not $b.Error) { $b.Error = [string]$_.Exception.Message; $b.Stack = ($_ | Out-String) } }
+    foreach ($r in $j.Results) { $script:results.Add($r) }
+    $j.Ps.Dispose(); $j.Rs.Dispose(); $b.Ev.Dispose()
+    $script:job = $null; $script:brg = $null; $script:rowMap = $null
+    if ($b.Error) {
+        try { Add-Content -Path $script:errLog -Value ("=== " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "`r`n" + $b.Stack) -Encoding UTF8 } catch { }
+    }
+    $was = $script:cancel
+    Set-Busy $false
+    $lbl.Text = $(if ($b.Error) { 'Fehler, siehe fehler.log.' } elseif ($was) { 'Abgebrochen.' } else { $j.Done })
+    if ($b.Error -and -not $script:closeRequested) { [void](Show-Msg "Der Lauf wurde durch einen Fehler beendet:`n`n$($b.Error)" 'DirToy' 'OK' 'Error') }
+    if ($j.Show) { Show-ResultsIfNeeded }
+}
+$script:jobTimer = New-Object System.Windows.Forms.Timer; $script:jobTimer.Interval = 50
+$script:jobTimer.Add_Tick({ Update-Job })
 
 # ---- Anleitung, wenn der Zeitplan nicht angelegt werden konnte (z. B. ohne Admin-Rechte)
 function Show-ManualSchedDialog($t, $s, [string]$err, $owner) {
@@ -1936,33 +2059,29 @@ $btnSched.Add_Click({
     if (-not $script:cur) { return }
     Show-ScheduleDialog $script:cur; Update-SchedLabel
 })
-$btnPrev.Add_Click({
-    if (-not $script:cur) { return }
+# Lauf starten; schlaegt schon der Start fehl, wird das Fenster wieder freigegeben
+function Invoke-Run($tasks, [bool]$preview, [string]$doneText, [bool]$showResult) {
+    if ($script:busy) { return }
     Clear-Log; Set-Busy $true
-    try { [void](Run-Task $script:cur $true) } finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Vorschau fertig.' }) }
-})
-$btnRun.Add_Click({
-    if (-not $script:cur) { return }
-    Clear-Log; $script:results.Clear(); Set-Busy $true
-    try { [void](Run-Task $script:cur $false) } finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Fertig.' }) }
-    Show-ResultsIfNeeded
-})
-$btnAll.Add_Click({
-    Clear-Log; $script:results.Clear(); Set-Busy $true
-    try { foreach ($t in @($script:tasks)) { [void](Run-Task $t $false); if ($script:cancel) { break } } }
-    finally { $was = $script:cancel; Set-Busy $false; $lbl.Text = $(if ($was) { 'Abgebrochen.' } else { 'Alle Aufgaben abgearbeitet.' }) }
-    Show-ResultsIfNeeded
-})
+    try { Start-SyncJob $tasks $preview $doneText $showResult }
+    catch { $m = $_.Exception.Message; $script:job = $null; $script:brg = $null; Set-Busy $false; [void](Show-Msg "Der Lauf konnte nicht gestartet werden:`n`n$m" 'DirToy' 'OK' 'Error') }
+}
+$btnPrev.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $true 'Vorschau fertig.' $false } })
+$btnRun.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $false 'Fertig.' $true } })
+$btnAll.Add_Click({ Invoke-Run @($script:tasks) $false 'Alle Aufgaben abgearbeitet.' $true })
 $btnCancel.Add_Click({
-    $script:cancel = $true; $btnCancel.Enabled = $false; $btnCancel.Text = 'Bricht ab ...'
+    Request-Cancel; $btnCancel.Enabled = $false; $btnCancel.Text = 'Bricht ab ...'
     $lbl.Text = 'Wird nach der aktuellen Datei abgebrochen ...'
 })
 $form.Add_FormClosing({
     param($s, $e)
     if ($script:busy) {
         $q = "Es läuft noch ein Vorgang.`nJetzt abbrechen und beenden?`n`nDas Programm beendet sich nach der aktuellen Datei. Es bleiben keine halben Dateien zurück."
-        if ((Show-Msg $q 'DirToy' 'YesNo' 'Question') -eq 'Yes') { $script:cancel = $true; $script:closeRequested = $true }
         $e.Cancel = $true
+        if ($script:asking) { return }
+        $script:asking = $true   # solange die Frage offen ist, wird der Lauf nicht abgeschlossen
+        try { if ((Show-Msg $q 'DirToy' 'YesNo' 'Question') -eq 'Yes') { Request-Cancel; $script:closeRequested = $true } }
+        finally { $script:asking = $false }
     }
 })
 

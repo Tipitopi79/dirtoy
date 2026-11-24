@@ -18,7 +18,7 @@ function Scan-Dir([System.IO.DirectoryInfo]$dir, [string]$rel, $pats, $dict, $di
         if (($script:scanCount % 300) -eq 0) {
             Out-Status "Lese Ordner ein ... ($($script:scanCount) Einträge)"
             Pump
-            if ($script:cancel -and $script:inPlan) { throw 'DIRTOY_CANCEL' }
+            if ($script:inPlan -and (Test-Cancel)) { throw 'DIRTOY_CANCEL' }
         }
         if ($e -isnot [System.IO.DirectoryInfo] -and $e.Name.EndsWith($script:tmpSuffix, [StringComparison]::OrdinalIgnoreCase)) {
             if ($null -ne $script:tmpFiles) { $script:tmpFiles.Add($e.FullName) }
