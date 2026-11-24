@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.7.4'
+$script:version = '1.7.5'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -312,7 +312,15 @@ function Build-Plan($t) {
     foreach ($k in $dsA) { if ($dsB.Contains($k)) { [void]$both.Add($k) } }
     # Nicht eingelesene Bereiche behalten ihren alten Stand
     if ($unread.Count) { foreach ($k in $state) { if (Test-Unread $k $unread) { [void]$both.Add($k) } } }
-    return [pscustomobject]@{ Plan = $final; A = $rootA; B = $rootB; Pats = $pats; ExDirs = $exDirs; Both = $both; State = $state }
+    # Auffaellig viele Loeschungen: eine Seite ist ganz leer, oder mehr als die Haelfte (ab 10 Dateien) soll weg
+    $mass = ''
+    foreach ($s in @(@('A', $rootA, $da.Count, 'B', $db.Count), @('B', $rootB, $db.Count, 'A', $da.Count))) {
+        $pre = $s[1] + '\'; $nd = 0
+        foreach ($p in $plan) { if ($p.Typ -eq 'Delete' -and $p.Src.StartsWith($pre, [StringComparison]::OrdinalIgnoreCase)) { $nd++ } }
+        if ($nd -gt 0 -and $s[4] -eq 0) { $mass = "Ordner $($s[3]) enthält keine Dateien, in Ordner $($s[0]) würden $nd von $($s[2]) Datei(en) gelöscht." }
+        elseif ($nd -ge 10 -and 2 * $nd -gt $s[2]) { $mass = "In Ordner $($s[0]) würden $nd von $($s[2]) Datei(en) gelöscht." }
+    }
+    return [pscustomobject]@{ Mass = $mass; Plan = $final; A = $rootA; B = $rootB; Pats = $pats; ExDirs = $exDirs; Both = $both; State = $state }
 }
 
 # ---------------------------------------------------------------- Plan ausführen
@@ -463,6 +471,7 @@ function Run-Task($t, [bool]$preview) {
 
     $uiMax = 2000   # mehr Zeilen machen die Liste langsam; vollstaendig steht alles im Protokoll
     if ($preview) {
+        if ($r.Mass) { [void](Add-Log 'Warnung' "Auffällig viele Löschungen: $($r.Mass)" 'bitte prüfen') }
         $script:bulk = $true
         if ($script:lv) { $script:lv.BeginUpdate() }
         try {
@@ -479,7 +488,18 @@ function Run-Task($t, [bool]$preview) {
         [void](Add-Log "Aufgabe '$($t.Name)'" "Vorschau: $($plan.Count) Aktion(en), davon $dels Löschung(en)" '')
         return $null
     }
-    if ($dels -gt 0 -and -not $NoGui) {
+    if ($r.Mass -and $NoGui) {
+        # Zeitplan: niemand kann nachfragen, also nichts veraendern
+        [void](Add-Log "Aufgabe '$($t.Name)'" "Abgebrochen, nichts wurde verändert. $($r.Mass) Wenn das gewollt ist, die Aufgabe einmal von Hand starten." 'FEHLER: Auffällig viele Löschungen')
+        return $null
+    }
+    if ($r.Mass) {
+        $ans = [System.Windows.Forms.MessageBox]::Show(
+            "Aufgabe '$($t.Name)': Auffällig viele Löschungen!`n`n$($r.Mass)`n`nIst das richtige Laufwerk verbunden und der richtige Ordner gewählt?`nTrotzdem löschen? (Papierkorb, sofern möglich)",
+            'Auffällig viele Löschungen', 'YesNo', 'Warning', 'Button2')
+        if ($ans -ne 'Yes') { [void](Add-Log "Aufgabe '$($t.Name)'" '' 'Abgebrochen.'); return $null }
+    }
+    elseif ($dels -gt 0 -and -not $NoGui) {
         $ans = [System.Windows.Forms.MessageBox]::Show(
             "Aufgabe '$($t.Name)': $dels Datei(en)/Ordner werden gelöscht (Papierkorb, sofern möglich).`nFortfahren?",
             'Löschen bestätigen', 'YesNo', 'Warning')

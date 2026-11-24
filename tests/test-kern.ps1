@@ -75,6 +75,30 @@ try {
         finally { Set-Readable $t.$side $true }
     } }
 
+    # --- Loeschgrenze ($NoGui = wie Zeitplan: bricht ab)
+    foreach ($c in @(0, 'A'), @(0, 'B'), @(1, 'A')) {
+        $m = $c[0]; $side = $c[1]; $t = New-Pair $m $true; $root = $t.$side; $other = if ($side -eq 'A') { $t.B } else { $t.A }
+        [IO.Directory]::Delete($root, $true); [void][IO.Directory]::CreateDirectory($root)
+        $r = Run-Task $t $false
+        Check "Modus ${m}: $side ploetzlich leer -> Abbruch" ($null -eq $r)
+        Check "Modus ${m}: $side ploetzlich leer -> Dateien noch da" ([IO.File]::Exists("$other\top.txt") -and [IO.File]::Exists("$other\sub\tief\y.txt"))
+        Check "Modus ${m}: $side ploetzlich leer -> Stand bleibt" ((Get-State $t.Id).Contains('top.txt'))
+    }
+    $t = New-Pair 1 $false; [IO.Directory]::Delete($t.A, $true); Put "$($t.A)\anders.txt" 'x'
+    foreach ($i in 1..10) { Put "$($t.B)\b$i.txt" 'x' }
+    Check 'Echo: falscher Ordner (ueber die Haelfte) -> Abbruch' ($null -eq (Run-Task $t $false))
+    Check 'Echo: falscher Ordner -> nichts kopiert, nichts geloescht' ([IO.File]::Exists("$($t.B)\b1.txt") -and -not [IO.File]::Exists("$($t.B)\anders.txt"))
+    $t = New-Pair 0 $true; foreach ($i in 1..8) { foreach ($r in $t.A, $t.B) { Put "$r\b$i.txt" 'x' } }
+    Save-State $t.Id @(@(1..8 | ForEach-Object { "b$_.txt" }) + 'top.txt', 'sub\', 'sub\x.txt', 'sub\tief\', 'sub\tief\y.txt')
+    foreach ($i in 1..5) { [IO.File]::Delete("$($t.A)\b$i.txt") }
+    $r = Run-Task $t $false; Check 'Sync: 5 von 11 geloescht (unter der Grenze) -> laeuft' ($r.Deleted -eq 5 -and $r.Errors -eq 0)
+    $t = New-Pair 0 $true; [IO.File]::Delete("$($t.A)\top.txt"); [IO.File]::Delete("$($t.A)\sub\x.txt")
+    $r = Run-Task $t $false; Check 'Sync: 2 von 3 geloescht (wenige Dateien) -> laeuft' ($r.Deleted -eq 2)
+    $t = New-Pair 0 $false; [IO.Directory]::Delete($t.B, $true); [void][IO.Directory]::CreateDirectory($t.B)
+    $r = Run-Task $t $false; Check 'Erstsync in leeren Ordner -> laeuft' ($r.Copied -eq 3 -and $r.Deleted -eq 0)
+    $t = New-Pair 1 $false; [IO.Directory]::Delete($t.B, $true); [void][IO.Directory]::CreateDirectory($t.B)
+    $r = Run-Task $t $false; Check 'Echo in leeres B -> laeuft' ($r.Copied -eq 3)
+
     # --- Unterordner ist auf einer Seite eine Verknuepfung (Junction), wird nicht eingelesen
     foreach ($m in 0, 1) {
         $t = New-Pair $m $true; [IO.Directory]::Delete("$($t.A)\sub", $true)
