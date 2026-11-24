@@ -44,6 +44,24 @@ try {
     $t = New-Pair 0 $true; [IO.Directory]::Delete("$($t.A)\sub", $true)
     Check 'Sync: ganzer Ordner geloescht -> 2 Dateien + 2 Ordner loeschen' ((Dels (Build-Plan $t).Plan) -eq 4)
 
+    # --- Fortschrittsbalken (rundete frueher auf ganz leer oder ganz voll)
+    $script:progTrack = @{ Width = 1000 }; $script:progFill = @{ Width = -1 }
+    foreach ($c in @(0, 0), @(0.35, 350), @(0.5, 500), @(0.9, 900), @(1, 1000), @(2, 1000)) {
+        Set-Progress $c[0]; Check "Fortschritt $($c[0]) -> $($c[1])" ($script:progFill.Width -eq $c[1])
+    }
+    $script:progTrack = $null; $script:progFill = $null
+
+    # --- geaenderte Dateien, Ausschluesse
+    foreach ($c in @(0, 'A', 'A'), @(0, 'B', 'B'), @(1, 'A', 'A'), @(1, 'B', 'A'), @(2, 'A', 'A'), @(2, 'B', '')) {
+        $t = New-Pair $c[0] $true; $f = Join-Path $t.($c[1]) 'top.txt'
+        [IO.File]::WriteAllText($f, 'geaendert'); [IO.File]::SetLastWriteTimeUtc($f, [datetime]'2026-02-01')
+        $p = (Build-Plan $t).Plan
+        if ($c[2]) { $q = Join-Path $t.($c[2]) 'top.txt'; $ok = ($p.Count -eq 1 -and $p[0].Typ -eq 'Copy' -and $p[0].Src -eq $q) } else { $ok = ($p.Count -eq 0) }
+        Check "Modus $($c[0]): $($c[1]) neuer -> Quelle '$($c[2])'" $ok
+    }
+    $t = New-Pair 0 $true; Put "$($t.A)\x.tmp" 'x'; Put "$($t.A)\sub\Thumbs.db" 'x'; Put "$($t.B)\~`$a.docx" 'x'
+    Check 'Ausschlussmuster: werden nicht angefasst' ((Build-Plan $t).Plan.Count -eq 0)
+
     # --- nicht lesbarer Unterordner
     foreach ($m in 0, 1, 2) { foreach ($side in 'A', 'B') {
         $t = New-Pair $m $true; $d = Join-Path $t.$side 'sub'; $other = if ($side -eq 'A') { $t.B } else { $t.A }
@@ -94,6 +112,11 @@ try {
     $r = Run-Task $t $false; Check 'Sync: 5 von 11 geloescht (unter der Grenze) -> laeuft' ($r.Deleted -eq 5 -and $r.Errors -eq 0)
     $t = New-Pair 0 $true; [IO.File]::Delete("$($t.A)\top.txt"); [IO.File]::Delete("$($t.A)\sub\x.txt")
     $r = Run-Task $t $false; Check 'Sync: 2 von 3 geloescht (wenige Dateien) -> laeuft' ($r.Deleted -eq 2)
+    # 10 von 20: genau die Haelfte ist erlaubt, 11 von 20 nicht
+    foreach ($c in @(10, $false), @(11, $true)) {
+        $t = New-Pair 1 $false; foreach ($i in 1..17) { Put "$($t.B)\b$i.txt" 'x'; if ($i -gt $c[0]) { Put "$($t.A)\b$i.txt" 'x' } }
+        Check "Echo: $($c[0]) von 20 -> Alarm $($c[1])" ([bool](Build-Plan $t).Mass -eq $c[1])
+    }
     $t = New-Pair 0 $false; [IO.Directory]::Delete($t.B, $true); [void][IO.Directory]::CreateDirectory($t.B)
     $r = Run-Task $t $false; Check 'Erstsync in leeren Ordner -> laeuft' ($r.Copied -eq 3 -and $r.Deleted -eq 0)
     $t = New-Pair 1 $false; [IO.Directory]::Delete($t.B, $true); [void][IO.Directory]::CreateDirectory($t.B)

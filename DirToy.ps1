@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.7.5'
+$script:version = '1.7.6'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -317,8 +317,8 @@ function Build-Plan($t) {
     foreach ($s in @(@('A', $rootA, $da.Count, 'B', $db.Count), @('B', $rootB, $db.Count, 'A', $da.Count))) {
         $pre = $s[1] + '\'; $nd = 0
         foreach ($p in $plan) { if ($p.Typ -eq 'Delete' -and $p.Src.StartsWith($pre, [StringComparison]::OrdinalIgnoreCase)) { $nd++ } }
-        if ($nd -gt 0 -and $s[4] -eq 0) { $mass = "Ordner $($s[3]) enthält keine Dateien, in Ordner $($s[0]) würden $nd von $($s[2]) Datei(en) gelöscht." }
-        elseif ($nd -ge 10 -and 2 * $nd -gt $s[2]) { $mass = "In Ordner $($s[0]) würden $nd von $($s[2]) Datei(en) gelöscht." }
+        if ($nd -gt 0 -and $s[4] -eq 0) { $mass = "Ordner $($s[3]) enthält keine Dateien, in Ordner $($s[0]) würden $nd von $($s[2]) Dateien gelöscht." }
+        elseif ($nd -ge 10 -and 2 * $nd -gt $s[2]) { $mass = "In Ordner $($s[0]) würden $nd von $($s[2]) Dateien gelöscht." }
     }
     return [pscustomobject]@{ Mass = $mass; Plan = $final; A = $rootA; B = $rootB; Pats = $pats; ExDirs = $exDirs; Both = $both; State = $state }
 }
@@ -398,7 +398,7 @@ function Write-LogLine([string]$aktion, [string]$datei, [string]$status) {
 }
 function Set-Progress([double]$frac) {
     if (-not $script:progFill) { return }
-    $w = [int]($script:progTrack.Width * [math]::Max(0, [math]::Min(1, $frac)))
+    $w = [int]($script:progTrack.Width * [math]::Max(0.0, [math]::Min(1.0, $frac)))
     $script:progFill.Width = $w
 }
 function Add-Log([string]$aktion, [string]$datei, [string]$status) {
@@ -494,15 +494,11 @@ function Run-Task($t, [bool]$preview) {
         return $null
     }
     if ($r.Mass) {
-        $ans = [System.Windows.Forms.MessageBox]::Show(
-            "Aufgabe '$($t.Name)': Auffällig viele Löschungen!`n`n$($r.Mass)`n`nIst das richtige Laufwerk verbunden und der richtige Ordner gewählt?`nTrotzdem löschen? (Papierkorb, sofern möglich)",
-            'Auffällig viele Löschungen', 'YesNo', 'Warning', 'Button2')
+        $ans = (Show-Msg "Aufgabe '$($t.Name)': Auffällig viele Löschungen!`n`n$($r.Mass)`n`nIst das richtige Laufwerk verbunden und der richtige Ordner gewählt?`nTrotzdem löschen? (Papierkorb, sofern möglich)" 'Auffällig viele Löschungen' 'YesNo' 'Warning' 'Button2')
         if ($ans -ne 'Yes') { [void](Add-Log "Aufgabe '$($t.Name)'" '' 'Abgebrochen.'); return $null }
     }
     elseif ($dels -gt 0 -and -not $NoGui) {
-        $ans = [System.Windows.Forms.MessageBox]::Show(
-            "Aufgabe '$($t.Name)': $dels Datei(en)/Ordner werden gelöscht (Papierkorb, sofern möglich).`nFortfahren?",
-            'Löschen bestätigen', 'YesNo', 'Warning')
+        $ans = (Show-Msg "Aufgabe '$($t.Name)': $dels Datei(en)/Ordner werden gelöscht (Papierkorb, sofern möglich).`nFortfahren?" 'Löschen bestätigen' 'YesNo' 'Warning')
         if ($ans -ne 'Yes') { [void](Add-Log "Aufgabe '$($t.Name)'" '' 'Abgebrochen.'); return $null }
     }
     $copied = 0; $deleted = 0; $errors = 0; $i = 0; $cancelled = $false; $lastPump = [Environment]::TickCount - 1000
@@ -870,6 +866,44 @@ function New-Card($parent, $x, $y, $w, $h) {
     Add-To $parent $p $x $y $w $h
 }
 
+# ---- Meldungen im DirToy-Look (wie MessageBox): OK oder YesNo, Rueckgabe 'OK', 'Yes' oder 'No'. Esc/Schliessen = Nein
+function Show-Msg([string]$text, [string]$title = 'DirToy', [string]$buttons = 'OK', [string]$icon = 'Information', [string]$default = 'Button1') {
+    $d = New-Object System.Windows.Forms.Form
+    $d.Text = $title; $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false; $d.ShowInTaskbar = $false
+    $d.StartPosition = 'CenterParent'; $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
+    $sz = [System.Windows.Forms.TextRenderer]::MeasureText($text, $fNormal, (New-Object System.Drawing.Size(400, 0)), 'WordBreak, NoPrefix')
+    $h = [math]::Max(48, $sz.Height + 8)
+    $d.ClientSize = New-Object System.Drawing.Size(520, ($h + 112))
+    $g = New-Object System.Windows.Forms.Label; $g.BackColor = [System.Drawing.Color]::Transparent; $g.UseMnemonic = $false
+    $g.Font = New-Object System.Drawing.Font('Segoe MDL2 Assets', 26)
+    switch ($icon) {
+        'Warning'  { $g.Text = [string][char]0xE7BA; $g.ForeColor = $(if ($isDark) { C '#FFB900' } else { C '#9D5D00' }) }
+        'Error'    { $g.Text = [string][char]0xEA39; $g.ForeColor = $th.Err }
+        'Question' { $g.Text = [string][char]0xE897; $g.ForeColor = $th.Accent }
+        default    { $g.Text = [string][char]0xE946; $g.ForeColor = $th.Accent }
+    }
+    [void](Add-To $d $g 20 24 64 48)
+    $l = New-Label $d 92 24 408 $text $false; $l.UseMnemonic = $false; $l.Size = New-Object System.Drawing.Size(408, $h)
+    $y = $h + 52
+    if ($buttons -eq 'YesNo') {
+        $no2 = ($default -eq 'Button2')
+        $bn = New-Btn $d 384 $y 112 38 'Nein' $no2 $th.Surface; $bn.DialogResult = 'No'
+        $by = New-Btn $d 260 $y 112 38 'Ja' (-not $no2) $th.Surface; $by.DialogResult = 'Yes'
+        $by.TabIndex = 1; $bn.TabIndex = 2
+        $def = if ($no2) { $bn } else { $by }; $d.CancelButton = $bn
+    } else {
+        $def = New-Btn $d 384 $y 112 38 'OK' $true $null; $def.DialogResult = 'OK'; $d.CancelButton = $def
+    }
+    $d.AcceptButton = $def; $d.ActiveControl = $def
+    $d.Add_HandleCreated({ try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($this.Handle, 20, [ref]$v, 4) } catch { } })
+    $owner = [System.Windows.Forms.Form]::ActiveForm; if (-not $owner) { $owner = $form }
+    if ($icon -eq 'Warning' -or $icon -eq 'Error') { [System.Media.SystemSounds]::Exclamation.Play() }
+    try { $r = [string]$d.ShowDialog($owner) } finally { $d.Dispose() }
+    if ($buttons -ne 'YesNo') { return 'OK' }
+    if ($r -eq 'Yes') { return 'Yes' }
+    return 'No'
+}
+
 # ---- Listen: Sortieren per Klick auf die Spaltenkoepfe, Markieren und Kopieren (Strg+C, Rechtsklick)
 if (-not ('DirToyLvSorter' -as [type])) {
     Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
@@ -1057,7 +1091,7 @@ function Show-ResultDialog($results) {
     $b1.Add_Click({
         $f = Write-ResultFile $script:resList
         if ($f) { try { Start-Process -FilePath $f -ErrorAction Stop } catch { Start-Process notepad.exe -ArgumentList "`"$f`"" } }
-        else { [void][System.Windows.Forms.MessageBox]::Show('Die CSV-Datei konnte nicht geschrieben werden.', 'DirToy', 'OK', 'Warning') }
+        else { [void](Show-Msg 'Die CSV-Datei konnte nicht geschrieben werden.' 'DirToy' 'OK' 'Warning') }
     })
     $script:resClose = $b2
     $b2.Add_Click({ $script:resClose.FindForm().Close() })
@@ -1249,14 +1283,14 @@ function Show-ManualSchedDialog($t, $s, [string]$err, $owner) {
     $b4 = New-Btn $f 530 424 94 34 'Schließen' $false $th.Surface
     $b5 = New-Btn $f 16 468 250 34 'Beim Anmelden starten' $false $th.Surface
     $script:mCmd = $cmd; $script:mArgs = $psArgs; $script:mTask = $t
-    $b1.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mCmd); [void][System.Windows.Forms.MessageBox]::Show('Der Befehl liegt in der Zwischenablage.', 'DirToy') } catch { } })
-    $b2.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mArgs); [void][System.Windows.Forms.MessageBox]::Show('Die Argumente liegen in der Zwischenablage.', 'DirToy') } catch { } })
-    $b3.Add_Click({ try { Start-Process 'taskschd.msc' } catch { [void][System.Windows.Forms.MessageBox]::Show('Der Aufgabenplaner ließ sich nicht öffnen (Windows-Taste, "Aufgabenplanung" tippen).', 'DirToy') } })
+    $b1.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mCmd); [void](Show-Msg 'Der Befehl liegt in der Zwischenablage.' 'DirToy') } catch { } })
+    $b2.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mArgs); [void](Show-Msg 'Die Argumente liegen in der Zwischenablage.' 'DirToy') } catch { } })
+    $b3.Add_Click({ try { Start-Process 'taskschd.msc' } catch { [void](Show-Msg ('Der Aufgabenplaner ließ sich nicht öffnen (Windows-Taste, "Aufgabenplanung" tippen).') 'DirToy') } })
     $b4.Add_Click({ $b4.FindForm().Close() })
     $b5.Add_Click({
         $lnk = New-AutostartLink $script:mTask
-        if ($lnk) { Save-Tasks; [void][System.Windows.Forms.MessageBox]::Show("Eingerichtet. DirToy führt die Aufgabe ab jetzt bei jeder Windows-Anmeldung aus.`n`n$lnk", 'DirToy') }
-        else { [void][System.Windows.Forms.MessageBox]::Show('Der Eintrag im Autostart-Ordner ließ sich nicht anlegen.', 'DirToy', 'OK', 'Warning') }
+        if ($lnk) { Save-Tasks; [void](Show-Msg "Eingerichtet. DirToy führt die Aufgabe ab jetzt bei jeder Windows-Anmeldung aus.`n`n$lnk" 'DirToy') }
+        else { [void](Show-Msg 'Der Eintrag im Autostart-Ordner ließ sich nicht anlegen.' 'DirToy' 'OK' 'Warning') }
     })
     $f.Add_HandleCreated({ try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($this.Handle, 20, [ref]$v, 4) } catch { } })
     [void]$f.ShowDialog($owner)
@@ -1354,9 +1388,9 @@ function Show-ScheduleDialog($t) {
     $script:dSave.Add_Click({
         $ty = $script:dType.SelectedIndex
         $days = @($script:dDays | Where-Object { $_.Checked } | ForEach-Object { [string]$_.Tag })
-        if ($ty -eq 1 -and $days.Count -eq 0) { [void][System.Windows.Forms.MessageBox]::Show('Bitte mindestens einen Wochentag wählen.', 'Zeitplan'); return }
+        if ($ty -eq 1 -and $days.Count -eq 0) { [void](Show-Msg 'Bitte mindestens einen Wochentag wählen.' 'Zeitplan'); return }
         $rp = ($ty -le 1 -and $script:dRep.Checked)
-        if ($rp -and [int]$script:dRepMin.Value -gt [int]$script:dRepHr.Value * 60) { [void][System.Windows.Forms.MessageBox]::Show('Das Intervall darf nicht länger sein als der Zeitraum.', 'Zeitplan'); return }
+        if ($rp -and [int]$script:dRepMin.Value -gt [int]$script:dRepHr.Value * 60) { [void](Show-Msg 'Das Intervall darf nicht länger sein als der Zeitraum.' 'Zeitplan'); return }
         $tt = $script:dTask
         $new = [pscustomobject]@{ Type = $ty; Time = $script:dTime.Value.ToString('HH:mm'); Days = $days; Minutes = [int]$script:dMin.Value; Start2 = ($ty -eq 2); Repeat = $rp; RepMinutes = [int]$script:dRepMin.Value; RepHours = [int]$script:dRepHr.Value; Notify = $script:dNotify.SelectedIndex }
         try { Register-Sched $tt $new; Save-Tasks; $script:dSave.FindForm().DialogResult = 'OK' }
@@ -1365,7 +1399,7 @@ function Show-ScheduleDialog($t) {
     $script:dRemove.Add_Click({
         $tt = $script:dTask
         try { Unregister-Sched $tt; $tt.Schedule = $null; Save-Tasks; $script:dSave.FindForm().DialogResult = 'OK' }
-        catch { [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Fehler', 'OK', 'Error') }
+        catch { [void](Show-Msg $_.Exception.Message 'Fehler' 'OK' 'Error') }
     })
     $script:dCancel.Add_Click({ $script:dSave.FindForm().DialogResult = 'Cancel' })
     $d.Add_HandleCreated({
@@ -1443,8 +1477,8 @@ function Show-Help {
     $bs = New-Btn $d 24 584 200 36 'Desktop-Verknüpfung' $false $th.Surface; $bs.Anchor = $A_BL
     $bs.Add_Click({
         $p = New-DesktopShortcut
-        if ($p) { [void][System.Windows.Forms.MessageBox]::Show("Die Verknüpfung wurde auf dem Desktop angelegt:`n$p", 'DirToy', 'OK', 'Information') }
-        else { [void][System.Windows.Forms.MessageBox]::Show('Die Verknüpfung konnte nicht angelegt werden.', 'DirToy', 'OK', 'Warning') }
+        if ($p) { [void](Show-Msg "Die Verknüpfung wurde auf dem Desktop angelegt:`n$p" 'DirToy' 'OK' 'Information') }
+        else { [void](Show-Msg 'Die Verknüpfung konnte nicht angelegt werden.' 'DirToy' 'OK' 'Warning') }
     })
     $cbr = New-Object System.Windows.Forms.CheckBox; $cbr.Text = 'Ergebnis-Fenster nach dem Lauf zeigen'; $cbr.AutoSize = $true; $cbr.BackColor = [System.Drawing.Color]::Transparent
     $cbr.Checked = [bool](Get-Setting 'ShowResult' $true); $cbr.Location = New-Object System.Drawing.Point(240, 592); $cbr.Anchor = $A_BL
@@ -1570,15 +1604,15 @@ function New-AutostartLink($t) {
 function Do-UpdateAction($info, [string]$action) {
     if ($action -eq 'web') { Start-Process $info.Url; return }
     if ($action -ne 'install') { return }
-    if ($script:busy) { [void][System.Windows.Forms.MessageBox]::Show('Bitte erst den laufenden Vorgang beenden oder abbrechen.', 'DirToy', 'OK', 'Information'); return }
+    if ($script:busy) { [void](Show-Msg 'Bitte erst den laufenden Vorgang beenden oder abbrechen.' 'DirToy' 'OK' 'Information'); return }
     $q = "DirToy $($info.Version) herunterladen und installieren?`n`nDie aktuelle Datei wird als DirToy.ps1.bak-$($script:version) gesichert. Danach startet DirToy neu."
-    if ([System.Windows.Forms.MessageBox]::Show($q, 'DirToy - Update', 'YesNo', 'Question') -ne 'Yes') { return }
+    if ((Show-Msg $q 'DirToy - Update' 'YesNo' 'Question') -ne 'Yes') { return }
     try {
         $form.Cursor = 'WaitCursor'
         Install-Update $info $script:scriptPath ''
     } catch {
         $form.Cursor = 'Default'
-        [void][System.Windows.Forms.MessageBox]::Show("Das Update ist fehlgeschlagen. Die bisherige Version bleibt unverändert.`n`n$($_.Exception.Message)", 'DirToy - Update', 'OK', 'Error')
+        [void](Show-Msg "Das Update ist fehlgeschlagen. Die bisherige Version bleibt unverändert.`n`n$($_.Exception.Message)" 'DirToy - Update' 'OK' 'Error')
         return
     }
     $form.Cursor = 'Default'
@@ -1690,7 +1724,7 @@ function Show-FolderDialog($t) {
         $script:fdRootB = [System.IO.Path]::GetFullPath([string]$t.B).TrimEnd('\')
     } catch { $script:fdRootA = ''; $script:fdRootB = '' }
     if (-not $t.A -or -not $t.B -or -not (Test-Path -LiteralPath $script:fdRootA -PathType Container) -or -not (Test-Path -LiteralPath $script:fdRootB -PathType Container)) {
-        [void][System.Windows.Forms.MessageBox]::Show('Bitte zuerst Ordner A und Ordner B angeben (beide müssen existieren).', 'Ordner wählen')
+        [void](Show-Msg ('Bitte zuerst Ordner A und Ordner B angeben (beide müssen existieren).') 'Ordner wählen')
         return
     }
     $script:fdTask = $t
@@ -1848,7 +1882,7 @@ $btnNew.Add_Click({
 $btnDel.Add_Click({
     $i = $lb.SelectedIndex; if ($i -lt 0) { return }
     $t = $script:tasks[$i]
-    if ([System.Windows.Forms.MessageBox]::Show("Aufgabe '$($t.Name)' löschen?`n(Die Ordner und Dateien bleiben unverändert.)", 'Löschen', 'YesNo', 'Question') -ne 'Yes') { return }
+    if ((Show-Msg "Aufgabe '$($t.Name)' löschen?`n(Die Ordner und Dateien bleiben unverändert.)" 'Löschen' 'YesNo' 'Question') -ne 'Yes') { return }
     try { Unregister-Sched $t } catch { }
     $script:tasks = @($script:tasks | Where-Object { $_.Id -ne $t.Id })
     Remove-Item (Join-Path $script:stateDir "$($t.Id).json"), (Join-Path $script:stateDir "$($t.Id).state") -ErrorAction SilentlyContinue
@@ -1870,7 +1904,7 @@ $btnTheme.Add_Click({
 })
 $btnLog.Add_Click({
     if (Test-Path $script:logFile) { Start-Process notepad.exe -ArgumentList "`"$($script:logFile)`"" }
-    else { [void][System.Windows.Forms.MessageBox]::Show('Es gibt noch kein Protokoll. Es entsteht beim ersten Sync-Lauf.', 'Protokoll') }
+    else { [void](Show-Msg 'Es gibt noch kein Protokoll. Es entsteht beim ersten Sync-Lauf.' 'Protokoll') }
 })
 $btnDirs.Add_Click({
     if (-not $script:cur) { return }
@@ -1905,7 +1939,7 @@ $form.Add_FormClosing({
     param($s, $e)
     if ($script:busy) {
         $q = "Es läuft noch ein Vorgang.`nJetzt abbrechen und beenden?`n`nDas Programm beendet sich nach der aktuellen Datei. Es bleiben keine halben Dateien zurück."
-        if ([System.Windows.Forms.MessageBox]::Show($q, 'DirToy', 'YesNo', 'Question') -eq 'Yes') { $script:cancel = $true; $script:closeRequested = $true }
+        if ((Show-Msg $q 'DirToy' 'YesNo' 'Question') -eq 'Yes') { $script:cancel = $true; $script:closeRequested = $true }
         $e.Cancel = $true
     }
 })
@@ -1918,9 +1952,9 @@ $form.Add_Shown({
         $lnkPath = Join-Path (Get-DesktopDir) 'DirToy.lnk'
         if (-not (Test-Path $lnkPath)) {
             $q = "Willkommen bei DirToy!`n`nSoll eine Verknüpfung mit Icon auf dem Desktop angelegt werden?`nDamit startet DirToy künftig ohne aufblitzendes Fenster.`n`n(Später jederzeit über Hilfe → Desktop-Verknüpfung.)"
-            if ([System.Windows.Forms.MessageBox]::Show($q, 'DirToy', 'YesNo', 'Question') -eq 'Yes') {
+            if ((Show-Msg $q 'DirToy' 'YesNo' 'Question') -eq 'Yes') {
                 $made = New-DesktopShortcut
-                if (-not $made) { [void][System.Windows.Forms.MessageBox]::Show('Die Verknüpfung konnte nicht angelegt werden.', 'DirToy', 'OK', 'Warning') }
+                if (-not $made) { [void](Show-Msg 'Die Verknüpfung konnte nicht angelegt werden.' 'DirToy' 'OK' 'Warning') }
             }
         }
     }
@@ -1930,7 +1964,7 @@ $form.Add_Shown({
     } | ForEach-Object { [string]$_.Name })
     if ($missing.Count -gt 0) {
         $q = "Für diese Aufgaben ist ein Zeitplan gespeichert, er ist aber im Windows-Aufgabenplaner nicht vorhanden. Sie laufen daher NICHT automatisch:`n`n  " + ($missing -join "`n  ") + "`n`nBitte die Aufgabe wählen und unter `"Zeitplan ...`" neu aktivieren. Falls das nicht geht, zeigt DirToy dort eine Anleitung zum manuellen Anlegen."
-        [void][System.Windows.Forms.MessageBox]::Show($q, 'DirToy - Zeitplan', 'OK', 'Warning')
+        [void](Show-Msg $q 'DirToy - Zeitplan' 'OK' 'Warning')
     }
     if ([bool](Get-Setting 'UpdateCheck' $true)) { Start-UpdateCheck $false }
     if ($script:tasks.Count -eq 0) { $btnNew.PerformClick() }
