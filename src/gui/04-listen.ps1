@@ -73,10 +73,4 @@ function Set-ListBehavior($lv, [bool]$sortable, [int]$rowH) {
     $m3.Add_Click({ Select-AllRows $this.Owner.SourceControl })
     $lv.ContextMenuStrip = $cm
 }
-# Liste leeren und Sortierung zuruecksetzen (neue Zeilen kommen sonst an sortierter Stelle statt am Ende)
-function Clear-Log {
-    $script:lv.ListViewItemSorter = $null
-    if ($script:lv.Tag) { $script:lv.Tag.Col = -1 }
-    $script:lv.Items.Clear(); $script:lv.Invalidate()
-}
 

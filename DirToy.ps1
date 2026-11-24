@@ -780,6 +780,7 @@ function Install-Update($info, [string]$target, [string]$sourceUrl) {
     } finally { if (Test-Path $neu) { Remove-Item $neu -Force -ErrorAction SilentlyContinue } }
 }
 if ($NoGui) { return }
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 # Kern-Funktionen merken (Name und Text): der Sync-Thread bekommt genau diese, nicht die Datei auf der Platte
 # (die koennte inzwischen durch ein Update ersetzt sein)
 $script:coreFns = @(Get-ChildItem function: | Where-Object { $_.ScriptBlock.File -eq $PSCommandPath } | ForEach-Object { , @($_.Name, $_.Definition) })
@@ -822,10 +823,6 @@ $fNormal = New-Object System.Drawing.Font('Segoe UI', 10)
 $fSmall  = New-Object System.Drawing.Font('Segoe UI', 9)
 $fBold   = New-Object System.Drawing.Font('Segoe UI Semibold', 10)
 $fTitle  = New-Object System.Drawing.Font('Segoe UI Semibold', 18)
-
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "DirToy $($script:version)"; $form.ClientSize = New-Object System.Drawing.Size(1080, 720); $form.MinimumSize = New-Object System.Drawing.Size(1090, 640)
-$form.StartPosition = 'CenterScreen'; $form.Font = $fNormal; $ico = Get-AppIcon; if ($ico) { $form.Icon = $ico }; $form.BackColor = $th.Bg; $form.ForeColor = $th.Text
 
 $AN = [System.Windows.Forms.AnchorStyles]
 $A_TL = $AN::Top -bor $AN::Left; $A_TLR = $A_TL -bor $AN::Right; $A_TR = $AN::Top -bor $AN::Right
@@ -979,12 +976,6 @@ function Set-ListBehavior($lv, [bool]$sortable, [int]$rowH) {
     $m3.Add_Click({ Select-AllRows $this.Owner.SourceControl })
     $lv.ContextMenuStrip = $cm
 }
-# Liste leeren und Sortierung zuruecksetzen (neue Zeilen kommen sonst an sortierter Stelle statt am Ende)
-function Clear-Log {
-    $script:lv.ListViewItemSorter = $null
-    if ($script:lv.Tag) { $script:lv.Tag.Col = -1 }
-    $script:lv.Items.Clear(); $script:lv.Invalidate()
-}
 
 # ---- Ergebnis-Fenster nach einem Lauf (Zusammenfassung wie bei SyncToy, Details sortier- und kopierbar)
 function Format-Bytes([long]$b) {
@@ -1109,160 +1100,397 @@ function Show-ResultsIfNeeded {
     Show-ResultDialog $list
 }
 
-# ---- Seitenleiste
-$side =New-Object System.Windows.Forms.Panel; $side.Dock = 'Left'; $side.Width = 270; $side.BackColor = $th.Surface
-$form.Controls.Add($side)
-$lt = New-Object System.Windows.Forms.Label; $lt.Text = 'DirToy'; $lt.Font = $fTitle; $lt.ForeColor = $th.Accent; $lt.AutoSize = $true
-[void](Add-To $side $lt 18 16 0 0)
-[void](New-Label $side 20 62 230 'Ordner synchron halten' $true)
-$lblVer = New-Label $side 20 80 230 "Version $($script:version)  ·  Updates prüfen" $true
-$lblVer.Cursor = 'Hand'; $lblVer.ForeColor = $th.Accent
-$script:updTimer = New-Object System.Windows.Forms.Timer; $script:updTimer.Interval = 300
-$script:updTimer.Add_Tick({ if ($script:updTask -and $script:updTask.IsCompleted) { Finish-UpdateCheck } })
-[void](New-Label $side 20 110 230 'AUFGABEN' $true)
-$lb = New-Object System.Windows.Forms.ListBox
-$lb.BorderStyle = 'None'; $lb.BackColor = $th.Surface; $lb.ForeColor = $th.Text; $lb.DrawMode = 'OwnerDrawFixed'; $lb.ItemHeight = 38
-[void](Add-To $side $lb 0 134 270 430); $lb.Anchor = $A_TLB
-$btnNew = New-Btn $side 16 664 112 38 '+ Neu' $false $th.Surface
-$btnDel = New-Btn $side 140 664 112 38 'Löschen' $false $th.Surface
-$btnNew.Anchor = $A_BL; $btnDel.Anchor = $A_BL
-$btnHelp = New-Btn $side 16 618 236 36 'Hilfe' $false $th.Surface; $btnHelp.Anchor = $A_BL
-$btnUpd = New-Btn $side 16 530 236 36 'Update verfügbar' $true $null; $btnUpd.Anchor = $A_BL; $btnUpd.Visible = $false
-$themeNames = @{ auto = 'Design: Automatisch'; hell = 'Design: Hell'; dunkel = 'Design: Dunkel' }
-$btnTheme = New-Btn $side 16 574 236 36 $themeNames[$script:themeSetting] $false $th.Surface; $btnTheme.Anchor = $A_BL
-$lb.Add_DrawItem({
-    param($s, $e)
-    if ($e.Index -lt 0) { return }
-    $sel = (($e.State -band [System.Windows.Forms.DrawItemState]::Selected) -ne 0)
-    $bg = if ($sel) { $script:th.SelBg } else { $script:th.Surface }
-    $br = New-Object System.Drawing.SolidBrush($bg); $e.Graphics.FillRectangle($br, $e.Bounds); $br.Dispose()
-    if ($sel) {
-        $ab = New-Object System.Drawing.SolidBrush($script:th.Accent)
-        $e.Graphics.FillRectangle($ab, $e.Bounds.X + 6, $e.Bounds.Y + 9, 3, $e.Bounds.Height - 18); $ab.Dispose()
-    }
-    $r = New-Object System.Drawing.Rectangle(($e.Bounds.X + 20), $e.Bounds.Y, ($e.Bounds.Width - 28), $e.Bounds.Height)
-    $fl = [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::EndEllipsis -bor [System.Windows.Forms.TextFormatFlags]::Left
-    [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, [string]$s.Items[$e.Index], $e.Font, $r, $script:th.Text, $fl)
-})
-
-# ---- Hauptbereich
-$main = New-Object System.Windows.Forms.Panel; $main.Dock = 'Fill'; $main.BackColor = $th.Bg
-$form.Controls.Add($main); $main.BringToFront()
-$cw = 770   # Breite der Karten (Hauptbereich ist ~810 breit)
-$card = New-Card $main 20 20 $cw 292; $card.Anchor = $A_TLR
-$iw = $cw - 40
-[void](New-Label $card 20 12 300 'Name der Aufgabe' $true)
-$tbName = New-Input $card 20 34 $iw; $tbName.Anchor = $A_TLR
-[void](New-Label $card 20 72 300 'Ordner A  (Quelle / links)' $true)
-$tbA = New-Input $card 20 94 ($iw - 44); $tbA.Anchor = $A_TLR
-$btnA = New-Btn $card ($cw - 60) 93 40 30 '…' $false $th.Surface; $btnA.Anchor = $A_TR
-[void](New-Label $card 20 132 300 'Ordner B  (Ziel / rechts)' $true)
-$tbB = New-Input $card 20 154 ($iw - 44); $tbB.Anchor = $A_TLR
-$btnB = New-Btn $card ($cw - 60) 153 40 30 '…' $false $th.Surface; $btnB.Anchor = $A_TR
-[void](New-Label $card 20 192 300 'Modus' $true)
-$cmb = New-Object System.Windows.Forms.ComboBox; $cmb.DropDownStyle = 'DropDownList'; $cmb.FlatStyle = 'Flat'
-$cmb.BackColor = $th.Input; $cmb.ForeColor = $th.Text; $cmb.Font = $fNormal
-foreach ($m in $script:modes) { [void]$cmb.Items.Add($m) }
-[void](Add-To $card $cmb 20 214 $iw 28); $cmb.Anchor = $A_TLR
-[void](New-Label $card 20 250 $iw 'Nicht synchronisieren  (Dateinamen/Muster mit ;  getrennt, z.B.  Thumbs.db;*.tmp;~$*;node_modules)' $true)
-$card.Height = 316
-$tbEx = New-Input $card 20 272 ($iw - 176); $tbEx.Anchor = $A_TLR
-$btnDirs = New-Btn $card ($cw - 20 - 166) 270 166 32 'Ordner wählen ...' $false $th.Surface; $btnDirs.Anchor = $A_TR
-$script:btnDirs = $btnDirs
-
-$btnPrev = New-Btn $main 20 340 130 40 'Vorschau' $false $th.Bg
-$btnRun  = New-Btn $main 160 340 170 40 'Synchronisieren' $true $null
-$btnAll  = New-Btn $main 340 340 200 40 'Alle Aufgaben ausführen' $false $th.Bg
-$btnCancel = New-Btn $main 160 340 170 40 'Abbrechen' $false $th.Bg; $btnCancel.Visible = $false
-$btnSched = New-Btn $main 550 340 115 40 'Zeitplan ...' $false $th.Bg; $btnSched.Anchor = $A_TL
-$btnLog = New-Btn $main 675 340 115 40 'Protokoll' $false $th.Bg; $btnLog.Anchor = $A_TL
-# Fortschrittsbalken
-$progTrack = New-Object System.Windows.Forms.Panel; $progTrack.BackColor = $th.Border
-[void](Add-To $main $progTrack 20 386 $cw 6); $progTrack.Anchor = $A_TLR
-$progFill = New-Object System.Windows.Forms.Panel; $progFill.BackColor = $th.Accent; $progFill.Dock = 'Left'; $progFill.Width = 0
-$progTrack.Controls.Add($progFill)
-$script:progTrack = $progTrack; $script:progFill = $progFill
-
-# ---- Log
-$logCard = New-Card $main 20 396 $cw 264; $logCard.Anchor = $A_ALL
-$lv = New-Object System.Windows.Forms.ListView
-[void]$lv.Columns.Add('Aktion', 250); [void]$lv.Columns.Add('Datei', 330); [void]$lv.Columns.Add('Status', 180)
-Set-ListBehavior $lv $true 30
-[void](Add-To $logCard $lv 0 0 $cw 264); $lv.Dock = 'Fill'
-$script:lv = $lv
-$lv.Add_DoubleClick({
-    if ($lv.SelectedItems.Count -gt 0) {
-        $f = $lv.SelectedItems[0].Tag
-        if ($f -is [string] -and $f.EndsWith('vorschau.csv') -and (Test-Path $f)) {
-            try { Start-Process -FilePath $f -ErrorAction Stop }
-            catch { Start-Process notepad.exe -ArgumentList "`"$f`"" }   # keine Zuordnung fuer .csv: im Editor oeffnen
-        }
-    }
-})
-$lv.Add_Resize({
-    $w = $lv.ClientSize.Width - $lv.Columns[0].Width - $lv.Columns[2].Width
-    if ($w -gt 150) { $lv.Columns[1].Width = $w }
-})
-
-$lbl = New-Object System.Windows.Forms.Label; $lbl.Text = 'Bereit.'; $lbl.Font = $fSmall; $lbl.ForeColor = $th.Muted
-$lbl.AutoSize = $false; $lbl.BackColor = [System.Drawing.Color]::Transparent
-[void](Add-To $main $lbl 20 672 300 24); $lbl.Anchor = $A_BL
-$lblSched = New-Object System.Windows.Forms.Label; $lblSched.Font = $fSmall; $lblSched.ForeColor = $th.Muted; $lblSched.AutoSize = $false
-$lblSched.TextAlign = 'MiddleRight'; $lblSched.BackColor = [System.Drawing.Color]::Transparent
-[void](Add-To $main $lblSched 330 672 460 24); $lblSched.Anchor = $A_BLR
-$script:lblSched = $lblSched
-$script:lblStatus = $lbl
-$tip = New-Object System.Windows.Forms.ToolTip
-$tip.SetToolTip($lb, 'Deine Sync-Aufgaben. Auswählen zum Bearbeiten.')
-$tip.SetToolTip($tbName, 'Name der Aufgabe (erscheint auch im Aufgabenplaner).')
-$tip.SetToolTip($tbA, 'Erster Ordner. Bei "Echo" und "Beitragen" ist das die Quelle.')
-$tip.SetToolTip($tbB, 'Zweiter Ordner. Bei "Echo" und "Beitragen" ist das das Ziel.')
-$tip.SetToolTip($cmb, 'Synchronisieren: beidseitig, mit Löschungen. Echo: B wird exakt wie A. Beitragen: A nach B, ohne Löschen.')
-$tip.SetToolTip($btnPrev, 'Zeigt nur an, was passieren würde. Es wird nichts verändert.')
-$tip.SetToolTip($btnRun, 'Führt die gewählte Aufgabe jetzt aus.')
-$tip.SetToolTip($btnAll, 'Führt alle Aufgaben nacheinander aus.')
-$tip.SetToolTip($btnDirs, 'Zeigt beide Ordner als Baum. Ordner abhaken, die nicht synchronisiert werden sollen.')
-$tip.SetToolTip($btnCancel, 'Bricht nach der aktuellen Datei ab. Es bleiben keine halben Dateien zurück.')
-$tip.SetToolTip($btnSched, 'Automatische Ausführung im Windows-Aufgabenplaner anlegen, ändern oder entfernen.')
-$tip.SetToolTip($btnLog, 'Öffnet das Protokoll aller bisherigen Läufe (sync.log).')
-$tip.SetToolTip($btnNew, 'Neue Sync-Aufgabe anlegen.')
-$tip.SetToolTip($btnDel, 'Gewählte Aufgabe löschen (Dateien bleiben unverändert, ein Zeitplan wird mit entfernt).')
-$tip.SetToolTip($btnHelp, 'Anleitung zum Tool.')
-$tip.SetToolTip($btnTheme, 'Wechselt zwischen Automatisch (wie Windows), Hell und Dunkel. DirToy startet dabei kurz neu.')
-$tip.SetToolTip($tbEx, 'Mit ; getrennt. Platzhalter * und ? erlaubt. Gilt für Dateien und Ordnernamen in beiden Ordnern.')
-
-# Dunkle Titelleiste
+# ---- Hauptfenster (WPF)
+if (-not ('DirToyRow' -as [type])) {
+    Add-Type -ReferencedAssemblies PresentationCore, PresentationFramework, WindowsBase, System.Xaml, System.Windows.Forms -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Windows.Media;
+public class DirToyItem : INotifyPropertyChanged {
+    public event PropertyChangedEventHandler PropertyChanged;
+    protected void Raise(string n) { if (PropertyChanged != null) PropertyChanged(this, new PropertyChangedEventArgs(n)); }
+}
+public class DirToyRow : DirToyItem {
+    string st; Brush br;
+    public string Icon { get; set; } public Brush IconBrush { get; set; }
+    public string Aktion { get; set; } public string Datei { get; set; } public string File { get; set; }
+    public string Status { get { return st; } set { st = value; Raise("Status"); } }
+    public Brush StatusBrush { get { return br; } set { br = value; Raise("StatusBrush"); } }
+}
+public class DirToyTask : DirToyItem {
+    string n, s; Brush d;
+    public string Id { get; set; }
+    public string Name { get { return n; } set { n = value; Raise("Name"); } }
+    public string Sub { get { return s; } set { s = value; Raise("Sub"); } }
+    public Brush Dot { get { return d; } set { d = value; Raise("Dot"); } }
+    public override string ToString() { return n; }
+}
+public class DirToyOwner : System.Windows.Forms.IWin32Window {
+    public IntPtr H; public IntPtr Handle { get { return H; } }
+}
+'@
+}
+$script:xaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:sys="clr-namespace:System;assembly=mscorlib"
+        Width="1120" Height="780" MinWidth="900" MinHeight="660" WindowStartupLocation="CenterScreen"
+        FontFamily="Segoe UI" FontSize="14" Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}"
+        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
+  <Window.TaskbarItemInfo><TaskbarItemInfo x:Name="task"/></Window.TaskbarItemInfo>
+  <Window.Resources>
+    <sys:Double x:Key="{x:Static SystemParameters.VerticalScrollBarButtonHeightKey}">72</sys:Double>
+    <Style x:Key="Icon" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/><Setter Property="VerticalAlignment" Value="Center"/><Setter Property="FontSize" Value="15"/><Setter Property="TextOptions.TextRenderingMode" Value="Grayscale"/>
+    </Style>
+    <Style x:Key="MutedText" TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource Muted}"/><Setter Property="FontSize" Value="12"/></Style>
+    <Style TargetType="Button">
+      <Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource Border}"/><Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="16,0"/><Setter Property="Height" Value="38"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+        <Grid>
+          <Border x:Name="b" CornerRadius="8" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"/>
+          <Border x:Name="h" CornerRadius="8" Background="{DynamicResource Text}" Opacity="0"/>
+          <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" RecognizesAccessKey="False"/>
+        </Grid>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsMouseOver" Value="True">
+            <Trigger.EnterActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="h" Storyboard.TargetProperty="Opacity" To="0.10" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></Trigger.EnterActions>
+            <Trigger.ExitActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="h" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.2"/></Storyboard></BeginStoryboard></Trigger.ExitActions>
+          </Trigger>
+          <Trigger Property="IsPressed" Value="True"><Setter TargetName="b" Property="Opacity" Value="0.75"/></Trigger>
+          <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/><Setter Property="Cursor" Value="Arrow"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Background" Value="{DynamicResource Accent}"/><Setter Property="Foreground" Value="{DynamicResource AccentText}"/>
+      <Setter Property="BorderThickness" Value="0"/><Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+    <Style x:Key="Ghost" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="BorderThickness" Value="0"/><Setter Property="Padding" Value="10,0"/><Setter Property="HorizontalContentAlignment" Value="Left"/>
+    </Style>
+    <Style TargetType="TextBox">
+      <Setter Property="Background" Value="{DynamicResource Input}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="CaretBrush" Value="{DynamicResource Text}"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource Border}"/><Setter Property="Height" Value="34"/><Setter Property="SelectionBrush" Value="{DynamicResource Accent}"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/><Setter Property="Padding" Value="8,0"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox">
+        <Border x:Name="b" CornerRadius="8" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
+          <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" VerticalAlignment="Center"/></Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="b" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+          <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style x:Key="Seg" TargetType="RadioButton">
+      <Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
+        <Border x:Name="b" CornerRadius="6" Background="Transparent" Padding="14,0" Height="30" Margin="3">
+          <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Center"/></Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource SelBg}"/></Trigger>
+          <Trigger Property="IsChecked" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource Accent}"/><Setter Property="Foreground" Value="{DynamicResource AccentText}"/></Trigger>
+          <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="ScrollBar">
+      <Setter Property="Background" Value="Transparent"/><Setter Property="Width" Value="10"/><Setter Property="MinWidth" Value="10"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollBar">
+        <Track x:Name="PART_Track" Orientation="Vertical" IsDirectionReversed="True"><Track.Thumb><Thumb MinHeight="36"><Thumb.Template><ControlTemplate TargetType="Thumb">
+          <Border CornerRadius="4" Margin="2" Background="{DynamicResource Border}"/></ControlTemplate></Thumb.Template></Thumb></Track.Thumb></Track>
+      </ControlTemplate></Setter.Value></Setter>
+      <Style.Triggers><Trigger Property="Orientation" Value="Horizontal"><Setter Property="Width" Value="Auto"/><Setter Property="Height" Value="10"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollBar">
+          <Track x:Name="PART_Track"><Track.Thumb><Thumb MinWidth="36"><Thumb.Template><ControlTemplate TargetType="Thumb"><Border CornerRadius="4" Margin="2" Background="{DynamicResource Border}"/></ControlTemplate></Thumb.Template></Thumb></Track.Thumb></Track>
+        </ControlTemplate></Setter.Value></Setter></Trigger></Style.Triggers>
+    </Style>
+    <Style TargetType="ToolTip"><Setter Property="Background" Value="{DynamicResource Surface}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="BorderBrush" Value="{DynamicResource Border}"/></Style>
+    <Style x:Key="PlainList" TargetType="ListBox">
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBox"><Grid x:Name="g"><ScrollViewer Focusable="False"><ItemsPresenter/></ScrollViewer></Grid>
+        <ControlTemplate.Triggers><Trigger Property="IsEnabled" Value="False"><Setter TargetName="g" Property="Opacity" Value="0.6"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="ListBoxItem">
+      <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
+        <Border x:Name="b" CornerRadius="8" Padding="12,9" Margin="0,1" Background="Transparent"><ContentPresenter/></Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource SelBg}"/></Trigger>
+          <Trigger Property="IsSelected" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource SelBg}"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="ListViewItem">
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Foreground" Value="{DynamicResource Text}"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListViewItem">
+        <Border x:Name="b" Background="Transparent" Padding="6,5" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,0.5"><GridViewRowPresenter VerticalAlignment="Center"/></Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource Hover}"/></Trigger>
+          <Trigger Property="IsSelected" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource SelBg}"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="GridViewColumnHeader">
+      <Setter Property="Foreground" Value="{DynamicResource Muted}"/><Setter Property="FontSize" Value="12"/><Setter Property="HorizontalContentAlignment" Value="Left"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="GridViewColumnHeader">
+        <Border Background="Transparent" Padding="12,7"><ContentPresenter/></Border></ControlTemplate></Setter.Value></Setter>
+    </Style>
+  </Window.Resources>
+  <Grid x:Name="root" Background="{DynamicResource Bg}">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="250"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <Border Background="{DynamicResource Surface}">
+      <DockPanel Margin="12,16,12,12">
+        <StackPanel DockPanel.Dock="Top" Margin="10,0,0,14">
+          <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE895;" Style="{StaticResource Icon}" FontSize="22" Foreground="{DynamicResource Accent}" Margin="0,2,10,0"/><TextBlock Text="DirToy" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource Accent}"/></StackPanel>
+          <Button x:Name="lblVer" AutomationProperties.Name="Updates prüfen" Style="{StaticResource Ghost}" Height="24" Padding="0" FontSize="12" Foreground="{DynamicResource Muted}" HorizontalAlignment="Left" ToolTip="Nach Updates suchen"/>
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Bottom">
+          <Button x:Name="btnUpd" Style="{StaticResource Primary}" Visibility="Collapsed" Margin="0,0,0,8"/>
+          <Button x:Name="btnLog" AutomationProperties.Name="Protokoll" Style="{StaticResource Ghost}" Height="34" ToolTip="Protokoll aller bisherigen Läufe (sync.log)"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE7C3;" Style="{StaticResource Icon}" Margin="0,0,10,0"/><TextBlock Text="Protokoll"/></StackPanel></Button>
+          <Button x:Name="btnTheme" AutomationProperties.Name="Design" Style="{StaticResource Ghost}" Height="34" ToolTip="Automatisch (wie Windows), Hell oder Dunkel. DirToy startet dabei kurz neu."><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE793;" Style="{StaticResource Icon}" Margin="0,0,10,0"/><TextBlock x:Name="lblTheme"/></StackPanel></Button>
+          <Button x:Name="btnHelp" AutomationProperties.Name="Hilfe" Style="{StaticResource Ghost}" Height="34" ToolTip="Anleitung"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE897;" Style="{StaticResource Icon}" Margin="0,0,10,0"/><TextBlock Text="Hilfe"/></StackPanel></Button>
+        </StackPanel>
+        <Button x:Name="btnNew" AutomationProperties.Name="Neue Aufgabe" DockPanel.Dock="Bottom" Margin="0,8,0,12" ToolTip="Neue Aufgabe anlegen"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE710;" Style="{StaticResource Icon}" Margin="0,0,8,0"/><TextBlock Text="Neue Aufgabe"/></StackPanel></Button>
+        <ListBox x:Name="lb" Style="{StaticResource PlainList}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource Text}" ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="Aufgaben">
+          <ListBox.ItemTemplate><DataTemplate>
+            <DockPanel><Ellipse DockPanel.Dock="Left" Width="9" Height="9" Fill="{Binding Dot}" Margin="0,0,10,0" VerticalAlignment="Center"/>
+              <StackPanel><TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding Sub}" Style="{StaticResource MutedText}" TextTrimming="CharacterEllipsis"/></StackPanel></DockPanel>
+          </DataTemplate></ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+    </Border>
+    <Grid Grid.Column="1" Margin="24,18,24,16">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+      <DockPanel>
+        <Button x:Name="btnGear" DockPanel.Dock="Right" Style="{StaticResource Ghost}" ToolTip="Einstellungen der Aufgabe: Ausschlüsse, Ordnerauswahl, Löschen" AutomationProperties.Name="Einstellungen der Aufgabe"><TextBlock Text="&#xE713;" Style="{StaticResource Icon}" FontSize="18"/></Button>
+        <Button x:Name="btnSched" AutomationProperties.Name="Zeitplan" DockPanel.Dock="Right" Style="{StaticResource Ghost}" ToolTip="Automatische Ausführung einrichten"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE823;" Style="{StaticResource Icon}" Margin="0,0,8,0"/><TextBlock x:Name="lblSched" MaxWidth="360" TextTrimming="CharacterEllipsis"/></StackPanel></Button>
+        <TextBox x:Name="tbName" FontSize="22" FontWeight="SemiBold" Height="42" Background="Transparent" BorderBrush="Transparent" Padding="4,0" Margin="-5,0,8,0" AutomationProperties.Name="Name der Aufgabe" ToolTip="Name der Aufgabe (anklicken zum Ändern)"/>
+      </DockPanel>
+      <Border x:Name="gear" Grid.Row="1" Visibility="Collapsed" Background="{DynamicResource Surface}" CornerRadius="12" Padding="16" Margin="0,12,0,0">
+        <StackPanel>
+          <TextBlock Text="Nicht synchronisieren: Dateinamen oder Muster, mit ; getrennt (z. B. Thumbs.db;*.tmp;~$*;node_modules)" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,6"/>
+          <DockPanel><Button x:Name="btnDel" DockPanel.Dock="Right" Margin="8,0,0,0" Height="34" Foreground="{DynamicResource Err}" ToolTip="Aufgabe löschen (Dateien bleiben unverändert)">Aufgabe löschen</Button>
+            <Button x:Name="btnDirs" DockPanel.Dock="Right" Margin="8,0,0,0" Height="34" ToolTip="Ordner abwählen, die nicht synchronisiert werden sollen"/>
+            <TextBox x:Name="tbEx" AutomationProperties.Name="Ausschlussmuster"/></DockPanel>
+        </StackPanel>
+      </Border>
+      <Grid Grid.Row="2" Margin="0,14,0,0">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="190"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <Border Background="{DynamicResource Surface}" CornerRadius="14" Padding="16">
+          <StackPanel>
+            <Path Data="M 1,8 Q 1,4 5,4 L 15,4 L 19,9 L 39,9 Q 43,9 43,13 L 43,31 Q 43,35 39,35 L 5,35 Q 1,35 1,31 Z" Stroke="{DynamicResource Accent}" StrokeThickness="2.5" StrokeLineJoin="Round" Width="46" Height="38" HorizontalAlignment="Center"/>
+            <TextBlock x:Name="lblA" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,8,0,0" TextTrimming="CharacterEllipsis"/>
+            <TextBlock Text="Ordner A" Style="{StaticResource MutedText}" HorizontalAlignment="Center" Margin="0,2,0,10"/>
+            <DockPanel><Button x:Name="btnA" DockPanel.Dock="Right" Height="34" Padding="10,0" Margin="6,0,0,0" ToolTip="Ordner A wählen" AutomationProperties.Name="Ordner A wählen"><TextBlock Text="&#xE712;" Style="{StaticResource Icon}"/></Button><TextBox x:Name="tbA" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" AutomationProperties.Name="Ordner A"/></DockPanel>
+          </StackPanel>
+        </Border>
+        <Grid Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center" Width="150" Height="90">
+          <Line x:Name="l1" X1="0" X2="138" Y1="28" Y2="28" Stroke="{DynamicResource Border}" StrokeThickness="1.5" StrokeDashArray="2 4"/>
+          <Line x:Name="l2" X1="12" X2="150" Y1="62" Y2="62" Stroke="{DynamicResource Border}" StrokeThickness="1.5" StrokeDashArray="2 4"/>
+          <Path x:Name="p1" Data="M 142,22 L 149,28 L 142,34" Stroke="{DynamicResource Muted}" StrokeThickness="2"/>
+          <Path x:Name="p2" Data="M 8,56 L 1,62 L 8,68" Stroke="{DynamicResource Muted}" StrokeThickness="2"/>
+          <Canvas x:Name="lane" Width="150" Height="90" Opacity="0"/>
+          <Grid x:Name="done" Width="64" Height="64" Opacity="0" IsHitTestVisible="False" RenderTransformOrigin="0.5,0.5"><Grid.RenderTransform><ScaleTransform x:Name="doneScale"/></Grid.RenderTransform>
+            <Ellipse x:Name="doneBg"/><Path x:Name="donePath" StrokeThickness="5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" StrokeDashArray="14" StrokeDashOffset="14"/></Grid>
+        </Grid>
+        <Border Grid.Column="2" Background="{DynamicResource Surface}" CornerRadius="14" Padding="16">
+          <StackPanel>
+            <Path Data="M 1,8 Q 1,4 5,4 L 15,4 L 19,9 L 39,9 Q 43,9 43,13 L 43,31 Q 43,35 39,35 L 5,35 Q 1,35 1,31 Z" Stroke="{DynamicResource Accent}" StrokeThickness="2.5" StrokeLineJoin="Round" Width="46" Height="38" HorizontalAlignment="Center"/>
+            <TextBlock x:Name="lblB" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,8,0,0" TextTrimming="CharacterEllipsis"/>
+            <TextBlock Text="Ordner B" Style="{StaticResource MutedText}" HorizontalAlignment="Center" Margin="0,2,0,10"/>
+            <DockPanel><Button x:Name="btnB" DockPanel.Dock="Right" Height="34" Padding="10,0" Margin="6,0,0,0" ToolTip="Ordner B wählen" AutomationProperties.Name="Ordner B wählen"><TextBlock Text="&#xE712;" Style="{StaticResource Icon}"/></Button><TextBox x:Name="tbB" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" AutomationProperties.Name="Ordner B"/></DockPanel>
+          </StackPanel>
+        </Border>
+      </Grid>
+      <DockPanel Grid.Row="3" Margin="0,14,0,0" LastChildFill="False">
+        <Border Background="{DynamicResource Surface}" CornerRadius="8" VerticalAlignment="Center"><StackPanel Orientation="Horizontal">
+          <RadioButton x:Name="m0" Style="{StaticResource Seg}" GroupName="m">Synchronisieren</RadioButton><RadioButton x:Name="m1" Style="{StaticResource Seg}" GroupName="m">Echo</RadioButton><RadioButton x:Name="m2" Style="{StaticResource Seg}" GroupName="m">Beitragen</RadioButton></StackPanel></Border>
+        <Button x:Name="btnAll" DockPanel.Dock="Right" ToolTip="Alle Aufgaben nacheinander ausführen">Alle ausführen</Button>
+        <Button x:Name="btnRun" AutomationProperties.Name="Starten" DockPanel.Dock="Right" Style="{StaticResource Primary}" Margin="8,0" MinWidth="120" ToolTip="Diese Aufgabe jetzt ausführen"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE768;" Style="{StaticResource Icon}" FontSize="13" Margin="0,0,8,0"/><TextBlock Text="Starten"/></StackPanel></Button>
+        <Button x:Name="btnCancel" DockPanel.Dock="Right" Margin="8,0" MinWidth="120" Visibility="Collapsed" ToolTip="Bricht nach der aktuellen Datei ab. Es bleiben keine halben Dateien zurück.">Abbrechen</Button>
+        <Button x:Name="btnPrev" DockPanel.Dock="Right" ToolTip="Zeigt nur an, was passieren würde">Vorschau</Button>
+      </DockPanel>
+      <TextBlock x:Name="lblMode" Grid.Row="4" Style="{StaticResource MutedText}" Margin="4,8,0,0"/>
+      <StackPanel Grid.Row="5" Margin="0,14,0,10">
+        <Border x:Name="track" Height="8" CornerRadius="4" Background="{DynamicResource Input}" ClipToBounds="True"><Grid HorizontalAlignment="Left"><Border x:Name="fill" Width="0" HorizontalAlignment="Left" CornerRadius="4" Background="{DynamicResource Accent}"/>
+          <Canvas x:Name="shineBox" ClipToBounds="True" HorizontalAlignment="Left" Width="{Binding ActualWidth, ElementName=fill}"><Rectangle x:Name="shine" Width="90" Height="8" Visibility="Collapsed"><Rectangle.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="#00FFFFFF" Offset="0"/><GradientStop Color="#80FFFFFF" Offset="0.5"/><GradientStop Color="#00FFFFFF" Offset="1"/></LinearGradientBrush></Rectangle.Fill></Rectangle></Canvas></Grid></Border>
+        <TextBlock x:Name="lblStatus" Style="{StaticResource MutedText}" Margin="4,6,0,0" Text="Bereit." TextTrimming="CharacterEllipsis"/>
+      </StackPanel>
+      <Border Grid.Row="6" Background="{DynamicResource Surface}" CornerRadius="12" Padding="4">
+        <Grid>
+          <ListView x:Name="lv" Background="Transparent" BorderThickness="0" FontSize="13" ScrollViewer.HorizontalScrollBarVisibility="Disabled" SelectionMode="Extended" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" AutomationProperties.Name="Aktionen">
+            <ListView.ContextMenu><ContextMenu><MenuItem x:Name="mi1" Header="Markierte Zeilen kopieren (Strg+C)"/><MenuItem x:Name="mi2" Header="Alle Zeilen kopieren"/><MenuItem x:Name="mi3" Header="Alles markieren (Strg+A)"/></ContextMenu></ListView.ContextMenu>
+            <ListView.View><GridView AllowsColumnReorder="False">
+              <GridViewColumn x:Name="c0" Width="250"><GridViewColumnHeader x:Name="h0" Tag="Aktion">Aktion</GridViewColumnHeader><GridViewColumn.CellTemplate><DataTemplate><StackPanel Orientation="Horizontal"><TextBlock Text="{Binding Icon}" Foreground="{Binding IconBrush}" Style="{StaticResource Icon}" FontSize="13" Width="22"/><TextBlock Text="{Binding Aktion}"/></StackPanel></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>
+              <GridViewColumn x:Name="c1" Width="330"><GridViewColumnHeader x:Name="h1" Tag="Datei">Datei</GridViewColumnHeader><GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding Datei}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Datei}"/></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>
+              <GridViewColumn x:Name="c2" Width="180"><GridViewColumnHeader x:Name="h2" Tag="Status">Status</GridViewColumnHeader><GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding Status}" Foreground="{Binding StatusBrush}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Status}"/></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>
+            </GridView></ListView.View>
+          </ListView>
+          <StackPanel x:Name="empty" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
+            <TextBlock Text="&#xE895;" Style="{StaticResource Icon}" FontSize="34" Foreground="{DynamicResource Border}" HorizontalAlignment="Center"/>
+            <TextBlock Text="Noch nichts gelaufen. Mit „Vorschau“ siehst du, was passieren würde." Style="{StaticResource MutedText}" Margin="0,10,0,0"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>
+'@
+$script:win = [System.Windows.Markup.XamlReader]::Parse($script:xaml)
+$win = $script:win
+$script:ui = @{}
+foreach ($m in [regex]::Matches($script:xaml, 'x:Name="(\w+)"')) { $n = $m.Groups[1].Value; $e = $win.FindName($n); if ($e) { $script:ui[$n] = $e } }
+$ui = $script:ui
+# Farben des Designs als Ressourcen
+$script:br = @{}
+foreach ($k in $th.Keys) {
+    $c = $th[$k]; $b = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromRgb($c.R, $c.G, $c.B)); $b.Freeze()
+    $script:br[$k] = $b; $win.Resources[$k] = $b
+}
+$b = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromArgb(14, $th.Text.R, $th.Text.G, $th.Text.B)); $b.Freeze(); $win.Resources['Hover'] = $b
+$b = [System.Windows.Media.SolidColorBrush]::new($(if ($isDark) { [System.Windows.Media.Color]::FromRgb(0xFF, 0xB9, 0x00) } else { [System.Windows.Media.Color]::FromRgb(0x9D, 0x5D, 0x00) })); $b.Freeze(); $script:br['Warn'] = $b
+$win.Title = "DirToy $($script:version)"
+$ico = Get-AppIcon
+if ($ico) { $win.Icon = [System.Windows.Interop.Imaging]::CreateBitmapSourceFromHIcon($ico.Handle, [System.Windows.Int32Rect]::Empty, [System.Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions()) }
+$ui.lblVer.Content = "Version $($script:version)  ·  Updates prüfen"
+$ui.lblTheme.Text = @{ auto = 'Design: Automatisch'; hell = 'Design: Hell'; dunkel = 'Design: Dunkel' }[$script:themeSetting]
+# $form: Besitzer fuer die Dialoge
+$script:form = New-Object DirToyOwner
+$form = $script:form
 try {
     Add-Type -Namespace Win32 -Name Dwm -MemberDefinition '[System.Runtime.InteropServices.DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(System.IntPtr hwnd, int attr, ref int val, int size);'
 } catch { }
-$form.Add_HandleCreated({
-    try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($form.Handle, 20, [ref]$v, 4) } catch { }
+$win.Add_SourceInitialized({
+    $form.H = (New-Object System.Windows.Interop.WindowInteropHelper $win).Handle
+    try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($form.H, 20, [ref]$v, 4) } catch { }
 })
+$script:updTimer = New-Object System.Windows.Forms.Timer; $script:updTimer.Interval = 300
+$script:updTimer.Add_Tick({ if ($script:updTask -and $script:updTask.IsCompleted) { Finish-UpdateCheck } })
+
+# Liste der Aktionen
+$script:rows = [System.Collections.ObjectModel.ObservableCollection[DirToyRow]]::new()
+$ui.lv.ItemsSource = $script:rows
+$script:sortCol = ''; $script:sortAsc = $true
+function Set-ListSort([string]$col, [bool]$asc) {
+    $script:sortCol = $col; $script:sortAsc = $asc
+    $v = [System.Windows.Data.CollectionViewSource]::GetDefaultView($script:rows)
+    $v.SortDescriptions.Clear()
+    if ($col) { $v.SortDescriptions.Add((New-Object System.ComponentModel.SortDescription($col, $(if ($asc) { 'Ascending' } else { 'Descending' })))) }
+    foreach ($h in $ui.h0, $ui.h1, $ui.h2) { $h.Content = [string]$h.Tag + $(if ($h.Tag -eq $col) { if ($asc) { ' ' + [char]0x25B2 } else { ' ' + [char]0x25BC } } else { '' }) }
+}
+foreach ($h in $ui.h0, $ui.h1, $ui.h2) {
+    $h.Add_Click({ if (-not $script:busy) { $c = [string]$this.Tag; Set-ListSort $c $(if ($script:sortCol -eq $c) { -not $script:sortAsc } else { $true }) } })
+}
+function Copy-Rows([bool]$all) {
+    $items = if ($all) { @($ui.lv.Items) } else { @($ui.lv.Items | Where-Object { $ui.lv.SelectedItems.Contains($_) }) }
+    if ($items.Count -eq 0) { return }
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($r in $items) { [void]$sb.AppendLine("$($r.Aktion)`t$($r.Datei)`t$($r.Status)") }
+    try { [System.Windows.Forms.Clipboard]::SetText($sb.ToString()) } catch { }
+}
+$ui.mi1.Add_Click({ Copy-Rows $false }); $ui.mi2.Add_Click({ Copy-Rows $true }); $ui.mi3.Add_Click({ $ui.lv.SelectAll() })
+$ui.lv.Add_PreviewKeyDown({
+    param($s, $e)
+    if ($e.Key -eq 'C' -and [System.Windows.Input.Keyboard]::Modifiers -eq 'Control') { Copy-Rows $false; $e.Handled = $true }
+})
+$ui.lv.Add_MouseDoubleClick({
+    $r = $ui.lv.SelectedItem
+    if ($r -and $r.File -and $r.File.EndsWith('vorschau.csv') -and (Test-Path -LiteralPath $r.File)) {
+        try { Start-Process -FilePath $r.File -ErrorAction Stop }
+        catch { Start-Process notepad.exe -ArgumentList "`"$($r.File)`"" }   # keine Zuordnung fuer .csv: im Editor oeffnen
+    }
+})
+$ui.lv.Add_SizeChanged({ $w = $ui.lv.ActualWidth - $ui.c0.Width - $ui.c2.Width - 34; if ($w -gt 120) { $ui.c1.Width = $w } })
+
+# ---- Animation zwischen den Ordnern
+$script:motion = [System.Windows.SystemParameters]::ClientAreaAnimation   # in Windows abgeschaltete Animationen respektieren
+function New-Anim([double]$from, [double]$to, [int]$ms) {
+    return (New-Object System.Windows.Media.Animation.DoubleAnimation($from, $to, [System.Windows.Duration][TimeSpan]::FromMilliseconds($ms)))
+}
+function Set-Opacity($el, [double]$to) {
+    if (-not $script:motion) { $el.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null); $el.Opacity = $to; return }
+    $el.BeginAnimation([System.Windows.UIElement]::OpacityProperty, (New-Anim $el.Opacity $to 250))
+}
+function Show-Direction([int]$mode) {
+    $two = ($mode -eq 0)
+    $ui.l2.X1 = $(if ($two) { 12 } else { 0 }); $ui.l2.X2 = $(if ($two) { 150 } else { 138 })
+    $ui.p2.Data = [System.Windows.Media.Geometry]::Parse($(if ($two) { 'M 8,56 L 1,62 L 8,68' } else { 'M 142,56 L 149,62 L 142,68' }))
+}
+function Start-Flow([int]$mode, [bool]$preview) {
+    Set-Opacity $ui.done 0
+    if (-not $script:motion) { return }
+    $ui.lane.Children.Clear()
+    foreach ($i in 0..9) {
+        $e = New-Object System.Windows.Shapes.Ellipse; $e.Width = 9; $e.Height = 9; $e.Opacity = 0
+        $e.Fill = $(if ($preview) { $script:br.Muted } else { $script:br.Accent })
+        [System.Windows.Controls.Canvas]::SetTop($e, $(if ($i % 2) { 57.5 } else { 23.5 }))
+        [void]$ui.lane.Children.Add($e)
+        $back = ($mode -eq 0 -and $i % 2)
+        $x = New-Anim $(if ($back) { 141 } else { 0 }) $(if ($back) { 0 } else { 141 }) 1500
+        $x.EasingFunction = New-Object System.Windows.Media.Animation.SineEase -Property @{ EasingMode = 'EaseInOut' }
+        $o = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames; $o.Duration = $x.Duration
+        foreach ($kf in @(0, 0), @(0.2, 1), @(0.8, 1), @(1, 0)) { [void]$o.KeyFrames.Add((New-Object System.Windows.Media.Animation.LinearDoubleKeyFrame($kf[1], [System.Windows.Media.Animation.KeyTime]::FromPercent($kf[0])))) }
+        foreach ($a in $x, $o) { $a.BeginTime = [TimeSpan]::FromMilliseconds(150 * $i); $a.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever }
+        $e.BeginAnimation([System.Windows.Controls.Canvas]::LeftProperty, $x)
+        $e.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $o)
+    }
+    Set-Opacity $ui.lane 1
+    $ui.shine.Visibility = 'Visible'
+    $s = New-Anim -90 900 1800; $s.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+    $ui.shine.BeginAnimation([System.Windows.Controls.Canvas]::LeftProperty, $s)
+}
+# $result: ok, err, cancel oder '' (nichts zeigen)
+function Stop-Flow([string]$result) {
+    Set-Opacity $ui.lane 0
+    $ui.lane.Children.Clear()   # beendet alle Punkt-Animationen
+    $ui.shine.BeginAnimation([System.Windows.Controls.Canvas]::LeftProperty, $null); $ui.shine.Visibility = 'Collapsed'
+    if (-not $result) { return }
+    $ui.doneBg.Fill = switch ($result) { 'ok' { $script:br.Ok } 'err' { $script:br.Err } default { $script:br.Muted } }
+    $ui.donePath.Stroke = $script:br.Bg
+    $ui.donePath.Data = [System.Windows.Media.Geometry]::Parse($(switch ($result) { 'ok' { 'M 18,33 L 28,43 L 46,23' } 'err' { 'M 22,22 L 42,42 M 42,22 L 22,42' } default { 'M 20,32 L 44,32' } }))
+    $dash = [System.Windows.Shapes.Shape]::StrokeDashOffsetProperty
+    if (-not $script:motion) { $ui.donePath.StrokeDashOffset = 0; Set-Opacity $ui.done 1; return }
+    Set-Opacity $ui.done 1
+    $sc = New-Anim 0.6 1 350; $sc.EasingFunction = New-Object System.Windows.Media.Animation.BackEase -Property @{ EasingMode = 'EaseOut'; Amplitude = 0.5 }
+    $ui.doneScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $sc)
+    $ui.doneScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $sc)
+    $d = New-Anim 14 0 450; $d.BeginTime = [TimeSpan]::FromMilliseconds(200)
+    $ui.donePath.BeginAnimation($dash, $d)
+}
 
 # ---- Anzeige: zeichnet, was der Sync-Thread meldet (laeuft nur im Fenster-Thread)
-function Out-Status([string]$text) { $script:lblStatus.Text = $text }
-function Set-Progress([double]$frac) { $script:progFill.Width = (Get-BarWidth $script:progTrack.Width $frac) }
+function Out-Status([string]$text) { $ui.lblStatus.Text = $text }
+function Set-Progress([double]$frac) {
+    $ui.fill.Width = Get-BarWidth ([int]$ui.track.ActualWidth) $frac
+    $ui.task.ProgressValue = [math]::Max(0.0, [math]::Min(1.0, $frac))
+}
+function Get-StatusBrush([string]$st) {
+    if ($st -like 'FEHLER*') { return $script:br.Err }
+    if ($st -eq 'OK') { return $script:br.Ok }
+    return $script:br.Muted
+}
 function Out-Row([string]$aktion, [string]$datei, [string]$status) {
-    $it = New-Object System.Windows.Forms.ListViewItem($aktion)
-    [void]$it.SubItems.Add($datei); [void]$it.SubItems.Add($status)
-    $c = Get-StatusColor $status; if ($c) { $it.ForeColor = $c }
-    [void]$script:lv.Items.Add($it)
-    if (-not $script:bulk) { $it.EnsureVisible() }
-    return $it
+    $r = [DirToyRow]::new()
+    $r.Aktion = $aktion; $r.Datei = $datei; $r.Status = $status; $r.StatusBrush = Get-StatusBrush $status
+    $g = 0; $c = 'Accent'
+    if ($aktion -like '*löschen*') { $g = 0xE74D; $c = 'Err' }
+    elseif ($aktion -like 'Konflikt*' -or $aktion -eq 'Warnung') { $g = 0xE7BA; $c = 'Warn' }
+    elseif ($aktion -like '*Ordner anlegen') { $g = 0xE8F4 }
+    elseif ($aktion -like 'A -> B*') { $g = 0xE72A }
+    elseif ($aktion -like 'B -> A*') { $g = 0xE72B }
+    elseif ($aktion -like 'Aufgabe *') { $g = 0xE946; $c = 'Muted' }
+    if ($g) { $r.Icon = [string][char]$g; $r.IconBrush = $script:br[$c] }
+    $script:rows.Add($r)
+    return $r
 }
-function Set-RowStatus($row, [string]$status) { $row.SubItems[2].Text = $status; $row.ForeColor = (Get-StatusColor $status) }
-function Set-RowFile($row, [string]$path) { $row.Tag = $path }
-function Start-Bulk { $script:lv.BeginUpdate() }
-function Stop-Bulk { $script:lv.EndUpdate() }
-function Limit-Rows([int]$max, [bool]$scroll) {
-    $n = $script:lv.Items.Count
-    if ($n -eq 0) { return }
-    if ($n -gt $max) { $script:lv.BeginUpdate(); try { for ($k = $n - $max; $k -gt 0; $k--) { $script:lv.Items.RemoveAt(0) } } finally { $script:lv.EndUpdate() } }
-    if ($scroll) { $script:lv.EnsureVisible($script:lv.Items.Count - 1) }
-}
+function Set-RowStatus($row, [string]$status) { $row.Status = $status; $row.StatusBrush = Get-StatusBrush $status }
+function Set-RowFile($row, [string]$path) { $row.File = $path }
+function Limit-Rows([int]$max) { for ($k = $script:rows.Count - $max; $k -gt 0; $k--) { $script:rows.RemoveAt(0) } }
 function Ask-User([string]$text, [string]$title, [bool]$defaultNo) {
     return ((Show-Msg $text $title 'YesNo' 'Warning' $(if ($defaultNo) { 'Button2' } else { 'Button1' })) -eq 'Yes')
 }
+# Liste leeren und Sortierung zuruecksetzen (neue Zeilen kommen sonst an sortierter Stelle statt am Ende)
+function Clear-Log { Set-ListSort '' $true; $script:rows.Clear(); $ui.empty.Visibility = 'Collapsed' }
 
 # ---- Sync im eigenen Thread. Der Kern fasst das Fenster nie an: Er legt Meldungen in $brg ab, ein Timer im
 # Fenster-Thread holt sie ab. Zurueck geht nur: Abbruch ($brg.Cancel) und die Antwort auf eine Rueckfrage.
@@ -1287,14 +1515,24 @@ $script:workerFns = {
         $brg.Ev.Reset()
         $brg.Ask = @($text, $title, $defaultNo)
         while (-not $brg.Ev.Wait(200)) { if ($brg.Cancel) { $brg.Ask = $null; return $false } }
-        return ([bool]$brg.Answer -and -not $brg.Cancel)
+        if ($brg.Answer -and -not $brg.Cancel) { return $true }
+        $brg.Declined = $true
+        return $false
     }
 }
 $script:workerRun = {
     $ErrorActionPreference = 'Stop'
     try {
         foreach ($job in $jobs) {
-            [void](Run-Task $job $isPreview)
+            $brg.Declined = $false
+            $res = Run-Task $job $isPreview
+            if (-not $isPreview) {
+                $no = ([bool]$brg.Declined -or ($res -and $res.Cancelled))   # Rueckfrage verneint oder abgebrochen
+                $bad = ($null -eq $res -and -not $no)
+                if ($bad) { $brg.Failed = $true }
+                if ($no) { $brg.Stopped = $true }
+                $brg.Infos.Add(@([string]$job.Id, $bad, $(if ($res) { [int]$res.Errors } else { 0 }), $no))
+            }
             if ($brg.Cancel) { break }
         }
     } catch { $brg.Error = [string]$_.Exception.Message; $brg.Stack = ($_ | Out-String) + $_.ScriptStackTrace }
@@ -1311,7 +1549,7 @@ function Start-SyncJob($tasks, [bool]$preview, [string]$doneText, [bool]$showRes
     $script:rowMap = New-Object 'System.Collections.Generic.Dictionary[int,object]'
     $script:brg = [hashtable]::Synchronized(@{
         Q = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'); Status = ''; Frac = 0.0; Cancel = $false
-        Ask = $null; Answer = $false; Ev = (New-Object System.Threading.ManualResetEventSlim); Error = ''; Stack = '' })
+        Ask = $null; Answer = $false; Ev = (New-Object System.Threading.ManualResetEventSlim); Error = ''; Stack = ''; Failed = $false; Stopped = $false; Declined = $false; Infos = (New-Object System.Collections.Generic.List[object]) })
     $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
     foreach ($f in $script:coreFns) { $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($f[0], $f[1]))) }
     $vars = @{ brg = $script:brg; NoGui = $false; headless = $false; cancel = $false; bulk = $false; inPlan = $false; scanCount = 0; tmpFiles = $null; copyBuf = $null; rowId = 0; logOn = $false
@@ -1324,7 +1562,7 @@ function Start-SyncJob($tasks, [bool]$preview, [string]$doneText, [bool]$showRes
     $ps = [powershell]::Create(); $ps.Runspace = $rs
     # ein einziges Skript: AddStatement haengt sich in PowerShell 5.1 mit ReuseThread auf
     [void]$ps.AddScript("param(`$jobs, `$isPreview)`n" + $script:workerFns.ToString() + "`n" + $script:workerRun.ToString()).AddArgument($jobs).AddArgument($preview)
-    $script:job = @{ Ps = $ps; Rs = $rs; H = $ps.BeginInvoke(); Results = $vars.results; Done = $doneText; Show = $showResult }
+    $script:job = @{ Ps = $ps; Rs = $rs; H = $ps.BeginInvoke(); Results = $vars.results; Done = $doneText; Show = $showResult; Preview = $preview }
     $script:jobTimer.Start()
 }
 function Request-Cancel {
@@ -1336,19 +1574,15 @@ function Receive-Rows([int]$ms) {
     $q = $script:brg.Q
     if ($q.Count -eq 0) { return }
     $sw = [System.Diagnostics.Stopwatch]::StartNew(); $m = $null; $scroll = $false
-    $script:bulk = $true   # waehrenddessen nicht bei jeder Zeile scrollen
-    $script:lv.BeginUpdate()
-    try {
-        while ($sw.ElapsedMilliseconds -lt $ms -and $q.TryDequeue([ref]$m)) {
-            switch ($m[0]) {
-                'row'    { $script:rowMap[$m[1]] = Out-Row $m[2] $m[3] $m[4]; if (-not $m[5]) { $scroll = $true } }
-                'status' { Set-RowStatus $script:rowMap[$m[1]] $m[2] }
-                'file'   { Set-RowFile $script:rowMap[$m[1]] $m[2] }
-                'limit'  { Limit-Rows $m[1] $false; if ($m[2]) { $scroll = $true } }
-            }
+    while ($sw.ElapsedMilliseconds -lt $ms -and $q.TryDequeue([ref]$m)) {
+        switch ($m[0]) {
+            'row'    { $script:rowMap[$m[1]] = Out-Row $m[2] $m[3] $m[4]; if (-not $m[5]) { $scroll = $true } }
+            'status' { Set-RowStatus $script:rowMap[$m[1]] $m[2] }
+            'file'   { Set-RowFile $script:rowMap[$m[1]] $m[2] }
+            'limit'  { Limit-Rows $m[1]; if ($m[2]) { $scroll = $true } }
         }
-    } finally { $script:lv.EndUpdate(); $script:bulk = $false }
-    if ($scroll -and $script:lv.Items.Count -gt 0) { $script:lv.EnsureVisible($script:lv.Items.Count - 1) }
+    }
+    if ($scroll -and $script:rows.Count -gt 0) { $ui.lv.ScrollIntoView($script:rows[$script:rows.Count - 1]) }
 }
 function Update-Job {
     if (-not $script:job) { return }
@@ -1377,11 +1611,16 @@ function Complete-Job {
     }
     $was = $script:cancel
     Set-Busy $false
-    $lbl.Text = $(if ($b.Error) { 'Fehler, siehe fehler.log.' } elseif ($was) { 'Abgebrochen.' } else { $j.Done })
+    $err = $false; foreach ($r in $j.Results) { if ($r.Errors -gt 0) { $err = $true } }
+    $bad = ($b.Error -or $err -or $b.Failed)
+    Stop-Flow $(if ($bad) { 'err' } elseif ($was -or $b.Stopped) { 'cancel' } elseif ($j.Preview) { '' } else { 'ok' })
+    $ui.task.ProgressState = $(if ($bad) { 'Error' } else { 'None' })
+    foreach ($x in $b.Infos) { Set-TaskInfo $x }
+    $ui.lblStatus.Text = $(if ($b.Error) { 'Fehler, siehe fehler.log.' } elseif ($was) { 'Abgebrochen.' } else { $j.Done })
     if ($b.Error -and -not $script:closeRequested) { [void](Show-Msg "Der Lauf wurde durch einen Fehler beendet:`n`n$($b.Error)" 'DirToy' 'OK' 'Error') }
     if ($j.Show) { Show-ResultsIfNeeded }
 }
-$script:jobTimer = New-Object System.Windows.Forms.Timer; $script:jobTimer.Interval = 50
+$script:jobTimer = New-Object System.Windows.Threading.DispatcherTimer([System.Windows.Threading.DispatcherPriority]::Normal); $script:jobTimer.Interval = [TimeSpan]::FromMilliseconds(50)
 $script:jobTimer.Add_Tick({ Update-Job })
 
 # ---- Anleitung, wenn der Zeitplan nicht angelegt werden konnte (z. B. ohne Admin-Rechte)
@@ -1554,17 +1793,16 @@ function Show-ScheduleDialog($t) {
     $d.Dispose()
 }
 function Update-SchedLabel {
-    if (-not $script:lblSched) { return }
     $t = $script:cur
-    if (-not $t) { $script:lblSched.Text = ''; return }
+    if (-not $t) { $ui.lblSched.Text = ''; return }
     $info = Get-SchedInfo $t
     if ($info) {
         $n = if ($info.Next -and $info.Next.Year -gt 2000) { '  ·  nächster Lauf ' + $info.Next.ToString('dd.MM. HH:mm') } else { '' }
-        $script:lblSched.Text = 'Zeitplan: ' + (Get-SchedText $t.Schedule) + $n
-    } elseif ($t.SchedName) { $script:lblSched.Text = 'ACHTUNG: Zeitplan im Aufgabenplaner nicht vorhanden - bitte "Zeitplan ..." neu aktivieren' }
-    elseif ($t.AutoLnk -and (Test-Path -LiteralPath ([string]$t.AutoLnk))) { $script:lblSched.Text = 'Läuft bei jeder Windows-Anmeldung (Autostart-Ordner)' }
-    elseif ($t.Schedule) { $script:lblSched.Text = 'ACHTUNG: Zeitplan ist nicht angelegt - bitte "Zeitplan ..." neu aktivieren' }
-    else { $script:lblSched.Text = 'Kein Zeitplan' }
+        $ui.lblSched.Text = 'Zeitplan: ' + (Get-SchedText $t.Schedule) + $n
+    } elseif ($t.SchedName) { $ui.lblSched.Text = 'ACHTUNG: Zeitplan fehlt im Aufgabenplaner, bitte hier neu aktivieren' }
+    elseif ($t.AutoLnk -and (Test-Path -LiteralPath ([string]$t.AutoLnk))) { $ui.lblSched.Text = 'Läuft bei jeder Windows-Anmeldung (Autostart-Ordner)' }
+    elseif ($t.Schedule) { $ui.lblSched.Text = 'ACHTUNG: Zeitplan ist nicht angelegt, bitte hier neu aktivieren' }
+    else { $ui.lblSched.Text = 'Kein Zeitplan' }
 }
 # ---- Hilfe-Fenster
 function Show-Help {
@@ -1753,18 +1991,18 @@ function Do-UpdateAction($info, [string]$action) {
     $q = "DirToy $($info.Version) herunterladen und installieren?`n`nDie aktuelle Datei wird als DirToy.ps1.bak-$($script:version) gesichert. Danach startet DirToy neu."
     if ((Show-Msg $q 'DirToy - Update' 'YesNo' 'Question') -ne 'Yes') { return }
     try {
-        $form.Cursor = 'WaitCursor'
+        [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait
         Install-Update $info $script:scriptPath ''
     } catch {
-        $form.Cursor = 'Default'
+        [System.Windows.Input.Mouse]::OverrideCursor = $null
         [void](Show-Msg "Das Update ist fehlgeschlagen. Die bisherige Version bleibt unverändert.`n`n$($_.Exception.Message)" 'DirToy - Update' 'OK' 'Error')
         return
     }
-    $form.Cursor = 'Default'
+    [System.Windows.Input.Mouse]::OverrideCursor = $null
     Save-Tasks
     Restart-DirToy
 
-    $form.Close()
+    $win.Close()
 }
 # Hintergrund-Pruefung: HttpClient-Task, ein Timer fragt das Ergebnis ab (Fenster bleibt bedienbar)
 $script:updInfo = $null; $script:updTask = $null; $script:updManual = $false
@@ -1787,9 +2025,8 @@ function Finish-UpdateCheck {
     $script:updTask = $null
     $script:updInfo = $info
     $show = Test-NewerVersion $info
-    $btnUpd.Visible = $show
-    $lb.Height = $(if ($show) { 386 } else { 430 })
-    if ($show) { $btnUpd.Text = "Update verfügbar: $($info.Version)" }
+    $ui.btnUpd.Visibility = $(if ($show) { 'Visible' } else { 'Collapsed' })
+    if ($show) { $ui.btnUpd.Content = "Update verfügbar: $($info.Version)" }
     if ($script:updManual) {
         $act = if ($show) { Show-UpdateDialog $info 'new' } elseif ($info) { Show-UpdateDialog $info 'current' } else { Show-UpdateDialog $null 'error' }
         Do-UpdateAction $info $act
@@ -1951,81 +2188,127 @@ function Show-FolderDialog($t) {
     [void]$d.ShowDialog($form)
     $d.Dispose()
 }
-function Update-DirsButton {
-    if (-not $script:btnDirs) { return }
-    $n = if ($script:cur) { @($script:cur.ExcludeDirs | Where-Object { $_ }).Count } else { 0 }
-    $script:btnDirs.Text = $(if ($n -gt 0) { "Ordner wählen ($n)" } else { 'Ordner wählen ...' })
-}
-$editors = @($tbName, $tbA, $tbB, $cmb, $tbEx, $btnDirs, $btnPrev, $btnRun, $btnDel, $btnSched)
+# ---- Ablauf: Aufgabenliste, Bearbeiten, Starten
+$script:modeHelp = @('A und B werden gleich: neuere Datei gewinnt, Löschungen werden übernommen.', 'B wird exakt wie A. Was nur in B liegt, wird gelöscht.', 'Neues und Geändertes von A nach B. Es wird nichts gelöscht.')
+$script:items = [System.Collections.ObjectModel.ObservableCollection[DirToyTask]]::new()
+$ui.lb.ItemsSource = $script:items
+$script:editors = @($ui.tbName, $ui.tbA, $ui.tbB, $ui.tbEx, $ui.m0, $ui.m1, $ui.m2, $ui.btnA, $ui.btnB)
+$script:actions = @($ui.btnPrev, $ui.btnRun, $ui.btnDel, $ui.btnSched, $ui.btnDirs, $ui.btnGear)
+$script:taskInfo = @{}   # Ergebnis des letzten Laufs in dieser Sitzung je Aufgabe
+$script:busy = $false
+$script:closeRequested = $false
+$script:loading = $false
 
+function Get-LeafName([string]$p) {
+    $x = $p.TrimEnd('\')
+    if (-not $x) { return 'nicht gewählt' }
+    $i = $x.LastIndexOf('\'); if ($i -ge 0 -and $i -lt $x.Length - 1) { return $x.Substring($i + 1) }
+    return $x
+}
+# Punkt und zweite Zeile in der Aufgabenliste. "zuletzt" = Zeitpunkt des gemerkten Stands (auch von Zeitplan-Laeufen)
+function Update-Item($item) {
+    $inf = $script:taskInfo[$item.Id]
+    $f = Join-Path $script:stateDir "$($item.Id).state"
+    $when = ''
+    if (Test-Path -LiteralPath $f) {
+        $d = (Get-Item -LiteralPath $f).LastWriteTime
+        $when = if ($d.Date -eq [datetime]::Today) { 'heute ' + $d.ToString('HH:mm') } elseif ($d.Date -eq [datetime]::Today.AddDays(-1)) { 'gestern ' + $d.ToString('HH:mm') } else { $d.ToString('dd.MM.yyyy') }
+    }
+    if ($inf -and $inf.Failed) { $item.Dot = $script:br.Err; $item.Sub = 'nicht gelaufen, siehe Liste' }
+    elseif ($inf -and $inf.Errors -gt 0) { $item.Dot = $script:br.Err; $item.Sub = "$when, $($inf.Errors) Fehler" }
+    elseif ($inf -and $inf.Cancelled) { $item.Dot = $script:br.Warn; $item.Sub = 'abgebrochen' }
+    elseif ($when) { $item.Dot = $script:br.Ok; $item.Sub = "zuletzt $when" }
+    else { $item.Dot = $script:br.Border; $item.Sub = 'noch nie gelaufen' }
+}
+function Set-TaskInfo($x) {
+    $script:taskInfo[$x[0]] = @{ Failed = $x[1]; Errors = $x[2]; Cancelled = $x[3] }
+    foreach ($it in $script:items) { if ($it.Id -eq $x[0]) { Update-Item $it } }
+}
+function Update-DirsButton {
+    $n = if ($script:cur) { @($script:cur.ExcludeDirs | Where-Object { $_ }).Count } else { 0 }
+    $ui.btnDirs.Content = $(if ($n -gt 0) { "Ordner abwählen ($n)" } else { 'Ordner abwählen ...' })
+}
 function Refresh-List([int]$select) {
     $script:loading = $true
-    $lb.Items.Clear()
-    foreach ($t in $script:tasks) { [void]$lb.Items.Add([string]$t.Name) }
-    if ($select -ge 0 -and $select -lt $lb.Items.Count) { $lb.SelectedIndex = $select }
+    $script:items.Clear()
+    foreach ($t in $script:tasks) { $it = [DirToyTask]::new(); $it.Id = [string]$t.Id; $it.Name = [string]$t.Name; Update-Item $it; $script:items.Add($it) }
+    $ui.lb.SelectedIndex = $(if ($select -ge 0 -and $select -lt $script:items.Count) { $select } else { -1 })
     $script:loading = $false
     Show-Cur
 }
+function Show-Mode([int]$m) { $ui.lblMode.Text = $script:modeHelp[$m]; Show-Direction $m }
 function Show-Cur {
-    $i = $lb.SelectedIndex
+    $i = $ui.lb.SelectedIndex
     $script:loading = $true
     if ($i -ge 0) {
         $script:cur = $script:tasks[$i]
-        $tbName.Text = [string]$script:cur.Name; $tbA.Text = [string]$script:cur.A; $tbB.Text = [string]$script:cur.B
-        $mi = [int]$script:cur.Mode; if ($mi -lt 0 -or $mi -ge $cmb.Items.Count) { $mi = 0 }; $cmb.SelectedIndex = $mi; $tbEx.Text = [string]$script:cur.Exclude
+        $ui.tbName.Text = [string]$script:cur.Name; $ui.tbA.Text = [string]$script:cur.A; $ui.tbB.Text = [string]$script:cur.B; $ui.tbEx.Text = [string]$script:cur.Exclude
+        $mi = [int]$script:cur.Mode; if ($mi -lt 0 -or $mi -gt 2) { $mi = 0 }
+        $ui["m$mi"].IsChecked = $true; Show-Mode $mi
     } else {
         $script:cur = $null
-        $tbName.Text = ''; $tbA.Text = ''; $tbB.Text = ''; $cmb.SelectedIndex = -1; $tbEx.Text = ''
+        $ui.tbName.Text = ''; $ui.tbA.Text = ''; $ui.tbB.Text = ''; $ui.tbEx.Text = ''; $ui.lblMode.Text = ''
+        foreach ($k in 'm0', 'm1', 'm2') { $ui[$k].IsChecked = $false }
     }
-    foreach ($c in $editors) { $c.Enabled = ($i -ge 0) }
-    $btnA.Enabled = $btnB.Enabled = ($i -ge 0)
-    $btnAll.Enabled = ($script:tasks.Count -gt 0)
+    $ui.lblA.Text = Get-LeafName $ui.tbA.Text; $ui.lblB.Text = Get-LeafName $ui.tbB.Text
     $script:loading = $false
+    Update-Enabled
     Update-SchedLabel
     Update-DirsButton
 }
-$script:busy = $false
-$script:closeRequested = $false
+function Update-Enabled {
+    $has = [bool]$script:cur
+    foreach ($c in $script:editors) { $c.IsEnabled = $has }
+    foreach ($c in $script:actions) { $c.IsEnabled = ($has -and -not $script:busy) }
+    $ui.btnAll.IsEnabled = ($script:tasks.Count -gt 0 -and -not $script:busy)
+    $ui.btnNew.IsEnabled = $ui.lb.IsEnabled = $ui.btnTheme.IsEnabled = (-not $script:busy)
+}
 function Set-Busy([bool]$busy) {
     $script:busy = $busy
     if ($busy) { $script:cancel = $false }
-    foreach ($c in @($btnPrev, $btnRun, $btnAll, $btnNew, $btnDel, $btnSched, $btnDirs, $lb)) { $c.Enabled = -not $busy }
-    $btnRun.Visible = -not $busy
-    $btnCancel.Visible = $busy; $btnCancel.Enabled = $busy; $btnCancel.Text = 'Abbrechen'
-    if (-not $busy) {
+    $ui.btnRun.Visibility = $(if ($busy) { 'Collapsed' } else { 'Visible' })
+    $ui.btnCancel.Visibility = $(if ($busy) { 'Visible' } else { 'Collapsed' })
+    $ui.btnCancel.IsEnabled = $busy; $ui.btnCancel.Content = 'Abbrechen'
+    if ($busy) { Update-Enabled }
+    else {
         Show-Cur
-        if ($script:closeRequested) { $form.Close() }
+        if ($script:closeRequested) { $win.Close() }
     }
 }
 
-$lb.Add_SelectedIndexChanged({ if (-not $script:loading) { Show-Cur } })
-$tbName.Add_TextChanged({
+$ui.lb.Add_SelectionChanged({ if (-not $script:loading) { Set-Opacity $ui.done 0; Show-Cur } })
+$ui.tbName.Add_TextChanged({
     if ($script:loading -or -not $script:cur) { return }
-    $script:cur.Name = $tbName.Text
-    $i = $lb.SelectedIndex
-    $script:loading = $true; $lb.Items[$i] = $tbName.Text; $lb.SelectedIndex = $i; $script:loading = $false
+    $script:cur.Name = $ui.tbName.Text
+    foreach ($it in $script:items) { if ($it.Id -eq $script:cur.Id) { $it.Name = $ui.tbName.Text } }
     Save-Tasks
 })
-$tbA.Add_TextChanged({ if (-not $script:loading -and $script:cur) { $script:cur.A = $tbA.Text; Save-Tasks } })
-$tbB.Add_TextChanged({ if (-not $script:loading -and $script:cur) { $script:cur.B = $tbB.Text; Save-Tasks } })
-$tbEx.Add_TextChanged({ if (-not $script:loading -and $script:cur) { $script:cur.Exclude = $tbEx.Text; Save-Tasks } })
-$cmb.Add_SelectedIndexChanged({ if (-not $script:loading -and $script:cur -and $cmb.SelectedIndex -ge 0) { $script:cur.Mode = $cmb.SelectedIndex; Save-Tasks } })
-
+$ui.tbA.Add_TextChanged({ $ui.lblA.Text = Get-LeafName $ui.tbA.Text; if (-not $script:loading -and $script:cur) { $script:cur.A = $ui.tbA.Text; Save-Tasks } })
+$ui.tbB.Add_TextChanged({ $ui.lblB.Text = Get-LeafName $ui.tbB.Text; if (-not $script:loading -and $script:cur) { $script:cur.B = $ui.tbB.Text; Save-Tasks } })
+$ui.tbEx.Add_TextChanged({ if (-not $script:loading -and $script:cur) { $script:cur.Exclude = $ui.tbEx.Text; Save-Tasks } })
+foreach ($k in 'm0', 'm1', 'm2') {
+    $ui[$k].Add_Checked({
+        if ($script:loading -or -not $script:cur) { return }
+        $script:cur.Mode = [int]$this.Name.Substring(1); Show-Mode $script:cur.Mode; Save-Tasks
+    })
+}
 function Pick-Folder($tb) {
     $d = New-Object System.Windows.Forms.FolderBrowserDialog
     if ($tb.Text -and (Test-Path -LiteralPath $tb.Text)) { $d.SelectedPath = $tb.Text }
-    if ($d.ShowDialog() -eq 'OK') { $tb.Text = $d.SelectedPath }
+    if ($d.ShowDialog($form) -eq 'OK') { $tb.Text = $d.SelectedPath }
 }
-$btnA.Add_Click({ Pick-Folder $tbA })
-$btnB.Add_Click({ Pick-Folder $tbB })
+$ui.btnA.Add_Click({ Pick-Folder $ui.tbA })
+$ui.btnB.Add_Click({ Pick-Folder $ui.tbB })
+$ui.btnGear.Add_Click({ $ui.gear.Visibility = $(if ($ui.gear.Visibility -eq 'Visible') { 'Collapsed' } else { 'Visible' }) })
 
-$btnNew.Add_Click({
+function New-TaskNow {
     $t = New-Task ('Aufgabe ' + ($script:tasks.Count + 1))
     $script:tasks = @($script:tasks) + $t
-    Save-Tasks; Refresh-List ($script:tasks.Count - 1); $tbName.Focus(); $tbName.SelectAll()
-})
-$btnDel.Add_Click({
-    $i = $lb.SelectedIndex; if ($i -lt 0) { return }
+    Save-Tasks; Refresh-List ($script:tasks.Count - 1); [void]$ui.tbName.Focus(); $ui.tbName.SelectAll()
+}
+$ui.btnNew.Add_Click({ New-TaskNow })
+$ui.btnDel.Add_Click({
+    $i = $ui.lb.SelectedIndex; if ($i -lt 0) { return }
     $t = $script:tasks[$i]
     if ((Show-Msg "Aufgabe '$($t.Name)' löschen?`n(Die Ordner und Dateien bleiben unverändert.)" 'Löschen' 'YesNo' 'Question') -ne 'Yes') { return }
     try { Unregister-Sched $t } catch { }
@@ -2033,47 +2316,43 @@ $btnDel.Add_Click({
     Remove-Item (Join-Path $script:stateDir "$($t.Id).json"), (Join-Path $script:stateDir "$($t.Id).state") -ErrorAction SilentlyContinue
     Save-Tasks; Refresh-List ([math]::Min($i, $script:tasks.Count - 1))
 })
-
-$btnHelp.Add_Click({ Show-Help })
-$lblVer.Add_Click({ Start-UpdateCheck $true })
-$btnUpd.Add_Click({ if ($script:updInfo) { Do-UpdateAction $script:updInfo (Show-UpdateDialog $script:updInfo 'new') } })
-$btnTheme.Add_Click({
+$ui.btnHelp.Add_Click({ Show-Help })
+$ui.lblVer.Add_Click({ Start-UpdateCheck $true })
+$ui.btnUpd.Add_Click({ if ($script:updInfo) { Do-UpdateAction $script:updInfo (Show-UpdateDialog $script:updInfo 'new') } })
+$ui.btnTheme.Add_Click({
     if ($script:busy) { return }
     $next = @{ auto = 'hell'; hell = 'dunkel'; dunkel = 'auto' }[$script:themeSetting]
     Set-ThemeSetting $next
     Save-Tasks
     # Design wird beim Aufbau des Fensters gesetzt: Programm kurz neu starten
     Restart-DirToy
-
-    $form.Close()
+    $win.Close()
 })
-$btnLog.Add_Click({
+$ui.btnLog.Add_Click({
     if (Test-Path $script:logFile) { Start-Process notepad.exe -ArgumentList "`"$($script:logFile)`"" }
     else { [void](Show-Msg 'Es gibt noch kein Protokoll. Es entsteht beim ersten Sync-Lauf.' 'Protokoll') }
 })
-$btnDirs.Add_Click({
-    if (-not $script:cur) { return }
-    Show-FolderDialog $script:cur; Update-DirsButton
-})
-$btnSched.Add_Click({
-    if (-not $script:cur) { return }
-    Show-ScheduleDialog $script:cur; Update-SchedLabel
-})
+$ui.btnDirs.Add_Click({ if ($script:cur) { Show-FolderDialog $script:cur; Update-DirsButton } })
+$ui.btnSched.Add_Click({ if ($script:cur) { Show-ScheduleDialog $script:cur; Update-SchedLabel } })
 # Lauf starten; schlaegt schon der Start fehl, wird das Fenster wieder freigegeben
 function Invoke-Run($tasks, [bool]$preview, [string]$doneText, [bool]$showResult) {
     if ($script:busy) { return }
     Clear-Log; Set-Busy $true
-    try { Start-SyncJob $tasks $preview $doneText $showResult }
-    catch { $m = $_.Exception.Message; $script:job = $null; $script:brg = $null; Set-Busy $false; [void](Show-Msg "Der Lauf konnte nicht gestartet werden:`n`n$m" 'DirToy' 'OK' 'Error') }
+    try {
+        Start-Flow $(if (@($tasks).Count -eq 1) { [int]@($tasks)[0].Mode } else { 0 }) $preview
+        $ui.task.ProgressState = 'Normal'; $ui.task.ProgressValue = 0
+        Start-SyncJob $tasks $preview $doneText $showResult
+    }
+    catch { $m = $_.Exception.Message; $script:job = $null; $script:brg = $null; Stop-Flow 'err'; $ui.task.ProgressState = 'None'; Set-Busy $false; [void](Show-Msg "Der Lauf konnte nicht gestartet werden:`n`n$m" 'DirToy' 'OK' 'Error') }
 }
-$btnPrev.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $true 'Vorschau fertig.' $false } })
-$btnRun.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $false 'Fertig.' $true } })
-$btnAll.Add_Click({ Invoke-Run @($script:tasks) $false 'Alle Aufgaben abgearbeitet.' $true })
-$btnCancel.Add_Click({
-    Request-Cancel; $btnCancel.Enabled = $false; $btnCancel.Text = 'Bricht ab ...'
-    $lbl.Text = 'Wird nach der aktuellen Datei abgebrochen ...'
+$ui.btnPrev.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $true 'Vorschau fertig.' $false } })
+$ui.btnRun.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $false 'Fertig.' $true } })
+$ui.btnAll.Add_Click({ Invoke-Run @($script:tasks) $false 'Alle Aufgaben abgearbeitet.' $true })
+$ui.btnCancel.Add_Click({
+    Request-Cancel; $ui.btnCancel.IsEnabled = $false; $ui.btnCancel.Content = 'Bricht ab ...'
+    $ui.lblStatus.Text = 'Wird nach der aktuellen Datei abgebrochen ...'
 })
-$form.Add_FormClosing({
+$win.Add_Closing({
     param($s, $e)
     if ($script:busy) {
         $q = "Es läuft noch ein Vorgang.`nJetzt abbrechen und beenden?`n`nDas Programm beendet sich nach der aktuellen Datei. Es bleiben keine halben Dateien zurück."
@@ -2086,7 +2365,7 @@ $form.Add_FormClosing({
 })
 
 Refresh-List 0
-$form.Add_Shown({
+$win.Add_ContentRendered({
     # Beim allerersten Start einmal anbieten, eine Desktop-Verknuepfung anzulegen (startet ohne aufblitzendes Fenster)
     if (-not [bool](Get-Setting 'ShortcutAsked' $false)) {
         Set-Setting 'ShortcutAsked' $true
@@ -2104,11 +2383,11 @@ $form.Add_Shown({
         ($_.SchedName -and -not (Get-SchedInfo $_)) -or ($_.Schedule -and -not $_.SchedName -and -not ($_.AutoLnk -and (Test-Path -LiteralPath ([string]$_.AutoLnk))))
     } | ForEach-Object { [string]$_.Name })
     if ($missing.Count -gt 0) {
-        $q = "Für diese Aufgaben ist ein Zeitplan gespeichert, er ist aber im Windows-Aufgabenplaner nicht vorhanden. Sie laufen daher NICHT automatisch:`n`n  " + ($missing -join "`n  ") + "`n`nBitte die Aufgabe wählen und unter `"Zeitplan ...`" neu aktivieren. Falls das nicht geht, zeigt DirToy dort eine Anleitung zum manuellen Anlegen."
+        $q = "Für diese Aufgaben ist ein Zeitplan gespeichert, er ist aber im Windows-Aufgabenplaner nicht vorhanden. Sie laufen daher NICHT automatisch:`n`n  " + ($missing -join "`n  ") + "`n`nBitte die Aufgabe wählen und oben rechts den Zeitplan neu aktivieren. Falls das nicht geht, zeigt DirToy dort eine Anleitung zum manuellen Anlegen."
         [void](Show-Msg $q 'DirToy - Zeitplan' 'OK' 'Warning')
     }
     if ([bool](Get-Setting 'UpdateCheck' $true)) { Start-UpdateCheck $false }
-    if ($script:tasks.Count -eq 0) { $btnNew.PerformClick() }
+    if ($script:tasks.Count -eq 0) { New-TaskNow }
 })
-[void]$form.ShowDialog()
+[void]$win.ShowDialog()
 Save-Tasks

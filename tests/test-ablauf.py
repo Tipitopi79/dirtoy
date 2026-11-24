@@ -17,7 +17,7 @@ def bis(f, sec, was):
     check('ZEIT ABGELAUFEN: ' + was, False); raise SystemExit(1)
 def antwort(m):   # laengste Zeit, die das Fenster nicht reagiert (bis 5 s)
     t = time.time(); r = ctypes.c_size_t(); u.SendMessageTimeoutW(m, 0, 0, 0, 0, 5000, ctypes.byref(r)); return time.time() - t
-def knopf_sichtbar(m, t): return any(text(h) == t and u.IsWindowVisible(h) for h in kinder(m))
+def knopf_sichtbar(m, id): r = uia('get', m, id); return r['found'] and r['visible']
 def kinder(m):
     r = []; u.EnumChildWindows(m, CB(lambda c, _: (r.append(c) or True)), 0); return r
 class Lauf:
@@ -33,8 +33,8 @@ class Lauf:
         json.dump(dict(Theme='dunkel', ShortcutAsked=True, UpdateCheck=False, ShowResult=ergebnis), open(os.path.join(self.D, 'einstellungen.json'), 'w'))
         self.p = subprocess.Popen(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', PS1], env=dict(os.environ, DIRTOY_DATA=self.D), creationflags=0x08000000)
         self.m = wait(self.p.pid, 'DirToy ' + VER); return self.m
-    def klick(self, t): click(self.m, t)
-    def status(self, t, sec=60): return bis(lambda: t in texte(self.m), sec, 'Status ' + t)
+    def klick(self, t): mklick(self.m, {'Synchronisieren': 'btnRun', 'Abbrechen': 'btnCancel', 'Vorschau': 'btnPrev', 'Alle Aufgaben ausführen': 'btnAll'}[t])
+    def status(self, t, sec=60): return bis(lambda: t == mstatus(self.m), sec, 'Status ' + t)
     def stand(self, i=0):
         f = os.path.join(self.D, 'state', self.ids[i] + '.state'); return set(open(f, encoding='utf-8').read().splitlines()) if os.path.exists(f) else None
     def log(self):
@@ -59,7 +59,7 @@ print('== Abbrechen bei vielen Dateien')
 with Lauf() as l:
     viele(l.A, 2500); l.start(); l.klick('Synchronisieren')
     bis(lambda: len(dateien(l.B)) > 60, 30, 'Lauf beginnt')
-    check('Abbrechen-Knopf sichtbar, Synchronisieren nicht', knopf_sichtbar(l.m, 'Abbrechen') and not knopf_sichtbar(l.m, 'Synchronisieren'))
+    check('Abbrechen-Knopf sichtbar, Synchronisieren nicht', knopf_sichtbar(l.m, 'btnCancel') and not knopf_sichtbar(l.m, 'btnRun'))
     l.klick('Abbrechen'); t = l.status('Abgebrochen.', 10); n = dateien(l.B)
     check(f'abgebrochen nach {t:.1f} s bei {len(n)} Dateien', t < 5 and 60 < len(n) < 2500)
     time.sleep(1); check('danach laeuft nichts weiter', dateien(l.B) == n)
@@ -116,14 +116,16 @@ with Lauf() as l:
 print('== Ordner im laufenden Betrieb aendern')
 with Lauf(2) as l:
     viele(l.A, 1200); falsch = l.paare[1][1]; l.start((0, 0)); l.klick('Synchronisieren'); bis(lambda: len(dateien(l.B)) > 60, 30, 'Lauf beginnt')
-    feld = [h for h in kinder(l.m) if text(h) == l.B]; check('Feld Ordner B gefunden', len(feld) == 1)
-    u.SendMessageTimeoutW(feld[0], 0x000C, 0, ctypes.c_wchar_p(falsch), 0, 5000, ctypes.byref(ctypes.c_size_t()))
+    uia('set', l.m, 'tbB', falsch); check('Feld Ordner B geaendert', uia('get', l.m, 'tbB')['value'] == falsch)
     l.status('Fertig.', 60); check('laufender Lauf bleibt beim alten Ordner', len(dateien(l.B)) == 1200 and not dateien(falsch))
     l.zu(); l.p.wait(10)
 print('== Reaktion des Fensters waehrend des Laufs')
 with Lauf() as l:
     viele(l.A, 2000); gross(os.path.join(l.A, 'gross.bin'), 600); l.start(); l.klick('Synchronisieren'); bis(lambda: dateien(l.B), 30, 'Lauf beginnt'); w = []
-    while 'Fertig.' not in texte(l.m) and len(w) < 20000: w.append(antwort(l.m)); time.sleep(0.005)
+    t0 = time.time()
+    while len(dateien(l.B)) < 2001 and time.time() - t0 < 60:
+        for _ in range(20): w.append(antwort(l.m)); time.sleep(0.005)
+    l.status('Fertig.')
     w.sort(); print(f'   {len(w)} Proben, 99% unter {w[int(len(w) * .99)] * 1000:.0f} ms, laengste {w[-1] * 1000:.0f} ms')
     check('Dateien vollstaendig', dateien(l.A) == dateien(l.B)); l.zu(); l.p.wait(10)
 print('ALLES OK' if ok else 'FEHLER')

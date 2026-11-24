@@ -34,10 +34,6 @@ $fSmall  = New-Object System.Drawing.Font('Segoe UI', 9)
 $fBold   = New-Object System.Drawing.Font('Segoe UI Semibold', 10)
 $fTitle  = New-Object System.Drawing.Font('Segoe UI Semibold', 18)
 
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "DirToy $($script:version)"; $form.ClientSize = New-Object System.Drawing.Size(1080, 720); $form.MinimumSize = New-Object System.Drawing.Size(1090, 640)
-$form.StartPosition = 'CenterScreen'; $form.Font = $fNormal; $ico = Get-AppIcon; if ($ico) { $form.Icon = $ico }; $form.BackColor = $th.Bg; $form.ForeColor = $th.Text
-
 $AN = [System.Windows.Forms.AnchorStyles]
 $A_TL = $AN::Top -bor $AN::Left; $A_TLR = $A_TL -bor $AN::Right; $A_TR = $AN::Top -bor $AN::Right
 $A_TLB = $A_TL -bor $AN::Bottom; $A_BL = $AN::Bottom -bor $AN::Left; $A_BR = $AN::Bottom -bor $AN::Right; $A_BLR = $A_BL -bor $AN::Right; $A_ALL = $A_TLR -bor $AN::Bottom

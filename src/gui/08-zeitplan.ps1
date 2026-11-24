@@ -111,15 +111,14 @@ function Show-ScheduleDialog($t) {
     $d.Dispose()
 }
 function Update-SchedLabel {
-    if (-not $script:lblSched) { return }
     $t = $script:cur
-    if (-not $t) { $script:lblSched.Text = ''; return }
+    if (-not $t) { $ui.lblSched.Text = ''; return }
     $info = Get-SchedInfo $t
     if ($info) {
         $n = if ($info.Next -and $info.Next.Year -gt 2000) { '  ·  nächster Lauf ' + $info.Next.ToString('dd.MM. HH:mm') } else { '' }
-        $script:lblSched.Text = 'Zeitplan: ' + (Get-SchedText $t.Schedule) + $n
-    } elseif ($t.SchedName) { $script:lblSched.Text = 'ACHTUNG: Zeitplan im Aufgabenplaner nicht vorhanden - bitte "Zeitplan ..." neu aktivieren' }
-    elseif ($t.AutoLnk -and (Test-Path -LiteralPath ([string]$t.AutoLnk))) { $script:lblSched.Text = 'Läuft bei jeder Windows-Anmeldung (Autostart-Ordner)' }
-    elseif ($t.Schedule) { $script:lblSched.Text = 'ACHTUNG: Zeitplan ist nicht angelegt - bitte "Zeitplan ..." neu aktivieren' }
-    else { $script:lblSched.Text = 'Kein Zeitplan' }
+        $ui.lblSched.Text = 'Zeitplan: ' + (Get-SchedText $t.Schedule) + $n
+    } elseif ($t.SchedName) { $ui.lblSched.Text = 'ACHTUNG: Zeitplan fehlt im Aufgabenplaner, bitte hier neu aktivieren' }
+    elseif ($t.AutoLnk -and (Test-Path -LiteralPath ([string]$t.AutoLnk))) { $ui.lblSched.Text = 'Läuft bei jeder Windows-Anmeldung (Autostart-Ordner)' }
+    elseif ($t.Schedule) { $ui.lblSched.Text = 'ACHTUNG: Zeitplan ist nicht angelegt, bitte hier neu aktivieren' }
+    else { $ui.lblSched.Text = 'Kein Zeitplan' }
 }

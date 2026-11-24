@@ -5,18 +5,18 @@
     $q = "DirToy $($info.Version) herunterladen und installieren?`n`nDie aktuelle Datei wird als DirToy.ps1.bak-$($script:version) gesichert. Danach startet DirToy neu."
     if ((Show-Msg $q 'DirToy - Update' 'YesNo' 'Question') -ne 'Yes') { return }
     try {
-        $form.Cursor = 'WaitCursor'
+        [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait
         Install-Update $info $script:scriptPath ''
     } catch {
-        $form.Cursor = 'Default'
+        [System.Windows.Input.Mouse]::OverrideCursor = $null
         [void](Show-Msg "Das Update ist fehlgeschlagen. Die bisherige Version bleibt unverändert.`n`n$($_.Exception.Message)" 'DirToy - Update' 'OK' 'Error')
         return
     }
-    $form.Cursor = 'Default'
+    [System.Windows.Input.Mouse]::OverrideCursor = $null
     Save-Tasks
     Restart-DirToy
 
-    $form.Close()
+    $win.Close()
 }
 # Hintergrund-Pruefung: HttpClient-Task, ein Timer fragt das Ergebnis ab (Fenster bleibt bedienbar)
 $script:updInfo = $null; $script:updTask = $null; $script:updManual = $false
@@ -39,9 +39,8 @@ function Finish-UpdateCheck {
     $script:updTask = $null
     $script:updInfo = $info
     $show = Test-NewerVersion $info
-    $btnUpd.Visible = $show
-    $lb.Height = $(if ($show) { 386 } else { 430 })
-    if ($show) { $btnUpd.Text = "Update verfügbar: $($info.Version)" }
+    $ui.btnUpd.Visibility = $(if ($show) { 'Visible' } else { 'Collapsed' })
+    if ($show) { $ui.btnUpd.Content = "Update verfügbar: $($info.Version)" }
     if ($script:updManual) {
         $act = if ($show) { Show-UpdateDialog $info 'new' } elseif ($info) { Show-UpdateDialog $info 'current' } else { Show-UpdateDialog $null 'error' }
         Do-UpdateAction $info $act

@@ -1,25 +1,34 @@
 ﻿# ---- Anzeige: zeichnet, was der Sync-Thread meldet (laeuft nur im Fenster-Thread)
-function Out-Status([string]$text) { $script:lblStatus.Text = $text }
-function Set-Progress([double]$frac) { $script:progFill.Width = (Get-BarWidth $script:progTrack.Width $frac) }
+function Out-Status([string]$text) { $ui.lblStatus.Text = $text }
+function Set-Progress([double]$frac) {
+    $ui.fill.Width = Get-BarWidth ([int]$ui.track.ActualWidth) $frac
+    $ui.task.ProgressValue = [math]::Max(0.0, [math]::Min(1.0, $frac))
+}
+function Get-StatusBrush([string]$st) {
+    if ($st -like 'FEHLER*') { return $script:br.Err }
+    if ($st -eq 'OK') { return $script:br.Ok }
+    return $script:br.Muted
+}
 function Out-Row([string]$aktion, [string]$datei, [string]$status) {
-    $it = New-Object System.Windows.Forms.ListViewItem($aktion)
-    [void]$it.SubItems.Add($datei); [void]$it.SubItems.Add($status)
-    $c = Get-StatusColor $status; if ($c) { $it.ForeColor = $c }
-    [void]$script:lv.Items.Add($it)
-    if (-not $script:bulk) { $it.EnsureVisible() }
-    return $it
+    $r = [DirToyRow]::new()
+    $r.Aktion = $aktion; $r.Datei = $datei; $r.Status = $status; $r.StatusBrush = Get-StatusBrush $status
+    $g = 0; $c = 'Accent'
+    if ($aktion -like '*löschen*') { $g = 0xE74D; $c = 'Err' }
+    elseif ($aktion -like 'Konflikt*' -or $aktion -eq 'Warnung') { $g = 0xE7BA; $c = 'Warn' }
+    elseif ($aktion -like '*Ordner anlegen') { $g = 0xE8F4 }
+    elseif ($aktion -like 'A -> B*') { $g = 0xE72A }
+    elseif ($aktion -like 'B -> A*') { $g = 0xE72B }
+    elseif ($aktion -like 'Aufgabe *') { $g = 0xE946; $c = 'Muted' }
+    if ($g) { $r.Icon = [string][char]$g; $r.IconBrush = $script:br[$c] }
+    $script:rows.Add($r)
+    return $r
 }
-function Set-RowStatus($row, [string]$status) { $row.SubItems[2].Text = $status; $row.ForeColor = (Get-StatusColor $status) }
-function Set-RowFile($row, [string]$path) { $row.Tag = $path }
-function Start-Bulk { $script:lv.BeginUpdate() }
-function Stop-Bulk { $script:lv.EndUpdate() }
-function Limit-Rows([int]$max, [bool]$scroll) {
-    $n = $script:lv.Items.Count
-    if ($n -eq 0) { return }
-    if ($n -gt $max) { $script:lv.BeginUpdate(); try { for ($k = $n - $max; $k -gt 0; $k--) { $script:lv.Items.RemoveAt(0) } } finally { $script:lv.EndUpdate() } }
-    if ($scroll) { $script:lv.EnsureVisible($script:lv.Items.Count - 1) }
-}
+function Set-RowStatus($row, [string]$status) { $row.Status = $status; $row.StatusBrush = Get-StatusBrush $status }
+function Set-RowFile($row, [string]$path) { $row.File = $path }
+function Limit-Rows([int]$max) { for ($k = $script:rows.Count - $max; $k -gt 0; $k--) { $script:rows.RemoveAt(0) } }
 function Ask-User([string]$text, [string]$title, [bool]$defaultNo) {
     return ((Show-Msg $text $title 'YesNo' 'Warning' $(if ($defaultNo) { 'Button2' } else { 'Button1' })) -eq 'Yes')
 }
+# Liste leeren und Sortierung zuruecksetzen (neue Zeilen kommen sonst an sortierter Stelle statt am Ende)
+function Clear-Log { Set-ListSort '' $true; $script:rows.Clear(); $ui.empty.Visibility = 'Collapsed' }
 

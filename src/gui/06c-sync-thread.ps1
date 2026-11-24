@@ -21,14 +21,24 @@ $script:workerFns = {
         $brg.Ev.Reset()
         $brg.Ask = @($text, $title, $defaultNo)
         while (-not $brg.Ev.Wait(200)) { if ($brg.Cancel) { $brg.Ask = $null; return $false } }
-        return ([bool]$brg.Answer -and -not $brg.Cancel)
+        if ($brg.Answer -and -not $brg.Cancel) { return $true }
+        $brg.Declined = $true
+        return $false
     }
 }
 $script:workerRun = {
     $ErrorActionPreference = 'Stop'
     try {
         foreach ($job in $jobs) {
-            [void](Run-Task $job $isPreview)
+            $brg.Declined = $false
+            $res = Run-Task $job $isPreview
+            if (-not $isPreview) {
+                $no = ([bool]$brg.Declined -or ($res -and $res.Cancelled))   # Rueckfrage verneint oder abgebrochen
+                $bad = ($null -eq $res -and -not $no)
+                if ($bad) { $brg.Failed = $true }
+                if ($no) { $brg.Stopped = $true }
+                $brg.Infos.Add(@([string]$job.Id, $bad, $(if ($res) { [int]$res.Errors } else { 0 }), $no))
+            }
             if ($brg.Cancel) { break }
         }
     } catch { $brg.Error = [string]$_.Exception.Message; $brg.Stack = ($_ | Out-String) + $_.ScriptStackTrace }
@@ -45,7 +55,7 @@ function Start-SyncJob($tasks, [bool]$preview, [string]$doneText, [bool]$showRes
     $script:rowMap = New-Object 'System.Collections.Generic.Dictionary[int,object]'
     $script:brg = [hashtable]::Synchronized(@{
         Q = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'); Status = ''; Frac = 0.0; Cancel = $false
-        Ask = $null; Answer = $false; Ev = (New-Object System.Threading.ManualResetEventSlim); Error = ''; Stack = '' })
+        Ask = $null; Answer = $false; Ev = (New-Object System.Threading.ManualResetEventSlim); Error = ''; Stack = ''; Failed = $false; Stopped = $false; Declined = $false; Infos = (New-Object System.Collections.Generic.List[object]) })
     $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
     foreach ($f in $script:coreFns) { $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($f[0], $f[1]))) }
     $vars = @{ brg = $script:brg; NoGui = $false; headless = $false; cancel = $false; bulk = $false; inPlan = $false; scanCount = 0; tmpFiles = $null; copyBuf = $null; rowId = 0; logOn = $false
@@ -58,7 +68,7 @@ function Start-SyncJob($tasks, [bool]$preview, [string]$doneText, [bool]$showRes
     $ps = [powershell]::Create(); $ps.Runspace = $rs
     # ein einziges Skript: AddStatement haengt sich in PowerShell 5.1 mit ReuseThread auf
     [void]$ps.AddScript("param(`$jobs, `$isPreview)`n" + $script:workerFns.ToString() + "`n" + $script:workerRun.ToString()).AddArgument($jobs).AddArgument($preview)
-    $script:job = @{ Ps = $ps; Rs = $rs; H = $ps.BeginInvoke(); Results = $vars.results; Done = $doneText; Show = $showResult }
+    $script:job = @{ Ps = $ps; Rs = $rs; H = $ps.BeginInvoke(); Results = $vars.results; Done = $doneText; Show = $showResult; Preview = $preview }
     $script:jobTimer.Start()
 }
 function Request-Cancel {
@@ -70,19 +80,15 @@ function Receive-Rows([int]$ms) {
     $q = $script:brg.Q
     if ($q.Count -eq 0) { return }
     $sw = [System.Diagnostics.Stopwatch]::StartNew(); $m = $null; $scroll = $false
-    $script:bulk = $true   # waehrenddessen nicht bei jeder Zeile scrollen
-    $script:lv.BeginUpdate()
-    try {
-        while ($sw.ElapsedMilliseconds -lt $ms -and $q.TryDequeue([ref]$m)) {
-            switch ($m[0]) {
-                'row'    { $script:rowMap[$m[1]] = Out-Row $m[2] $m[3] $m[4]; if (-not $m[5]) { $scroll = $true } }
-                'status' { Set-RowStatus $script:rowMap[$m[1]] $m[2] }
-                'file'   { Set-RowFile $script:rowMap[$m[1]] $m[2] }
-                'limit'  { Limit-Rows $m[1] $false; if ($m[2]) { $scroll = $true } }
-            }
+    while ($sw.ElapsedMilliseconds -lt $ms -and $q.TryDequeue([ref]$m)) {
+        switch ($m[0]) {
+            'row'    { $script:rowMap[$m[1]] = Out-Row $m[2] $m[3] $m[4]; if (-not $m[5]) { $scroll = $true } }
+            'status' { Set-RowStatus $script:rowMap[$m[1]] $m[2] }
+            'file'   { Set-RowFile $script:rowMap[$m[1]] $m[2] }
+            'limit'  { Limit-Rows $m[1]; if ($m[2]) { $scroll = $true } }
         }
-    } finally { $script:lv.EndUpdate(); $script:bulk = $false }
-    if ($scroll -and $script:lv.Items.Count -gt 0) { $script:lv.EnsureVisible($script:lv.Items.Count - 1) }
+    }
+    if ($scroll -and $script:rows.Count -gt 0) { $ui.lv.ScrollIntoView($script:rows[$script:rows.Count - 1]) }
 }
 function Update-Job {
     if (-not $script:job) { return }
@@ -111,10 +117,15 @@ function Complete-Job {
     }
     $was = $script:cancel
     Set-Busy $false
-    $lbl.Text = $(if ($b.Error) { 'Fehler, siehe fehler.log.' } elseif ($was) { 'Abgebrochen.' } else { $j.Done })
+    $err = $false; foreach ($r in $j.Results) { if ($r.Errors -gt 0) { $err = $true } }
+    $bad = ($b.Error -or $err -or $b.Failed)
+    Stop-Flow $(if ($bad) { 'err' } elseif ($was -or $b.Stopped) { 'cancel' } elseif ($j.Preview) { '' } else { 'ok' })
+    $ui.task.ProgressState = $(if ($bad) { 'Error' } else { 'None' })
+    foreach ($x in $b.Infos) { Set-TaskInfo $x }
+    $ui.lblStatus.Text = $(if ($b.Error) { 'Fehler, siehe fehler.log.' } elseif ($was) { 'Abgebrochen.' } else { $j.Done })
     if ($b.Error -and -not $script:closeRequested) { [void](Show-Msg "Der Lauf wurde durch einen Fehler beendet:`n`n$($b.Error)" 'DirToy' 'OK' 'Error') }
     if ($j.Show) { Show-ResultsIfNeeded }
 }
-$script:jobTimer = New-Object System.Windows.Forms.Timer; $script:jobTimer.Interval = 50
+$script:jobTimer = New-Object System.Windows.Threading.DispatcherTimer([System.Windows.Threading.DispatcherPriority]::Normal); $script:jobTimer.Interval = [TimeSpan]::FromMilliseconds(50)
 $script:jobTimer.Add_Tick({ Update-Job })
 

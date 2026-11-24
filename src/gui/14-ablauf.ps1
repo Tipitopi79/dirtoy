@@ -1,78 +1,124 @@
-﻿function Update-DirsButton {
-    if (-not $script:btnDirs) { return }
-    $n = if ($script:cur) { @($script:cur.ExcludeDirs | Where-Object { $_ }).Count } else { 0 }
-    $script:btnDirs.Text = $(if ($n -gt 0) { "Ordner wählen ($n)" } else { 'Ordner wählen ...' })
-}
-$editors = @($tbName, $tbA, $tbB, $cmb, $tbEx, $btnDirs, $btnPrev, $btnRun, $btnDel, $btnSched)
+﻿# ---- Ablauf: Aufgabenliste, Bearbeiten, Starten
+$script:modeHelp = @('A und B werden gleich: neuere Datei gewinnt, Löschungen werden übernommen.', 'B wird exakt wie A. Was nur in B liegt, wird gelöscht.', 'Neues und Geändertes von A nach B. Es wird nichts gelöscht.')
+$script:items = [System.Collections.ObjectModel.ObservableCollection[DirToyTask]]::new()
+$ui.lb.ItemsSource = $script:items
+$script:editors = @($ui.tbName, $ui.tbA, $ui.tbB, $ui.tbEx, $ui.m0, $ui.m1, $ui.m2, $ui.btnA, $ui.btnB)
+$script:actions = @($ui.btnPrev, $ui.btnRun, $ui.btnDel, $ui.btnSched, $ui.btnDirs, $ui.btnGear)
+$script:taskInfo = @{}   # Ergebnis des letzten Laufs in dieser Sitzung je Aufgabe
+$script:busy = $false
+$script:closeRequested = $false
+$script:loading = $false
 
+function Get-LeafName([string]$p) {
+    $x = $p.TrimEnd('\')
+    if (-not $x) { return 'nicht gewählt' }
+    $i = $x.LastIndexOf('\'); if ($i -ge 0 -and $i -lt $x.Length - 1) { return $x.Substring($i + 1) }
+    return $x
+}
+# Punkt und zweite Zeile in der Aufgabenliste. "zuletzt" = Zeitpunkt des gemerkten Stands (auch von Zeitplan-Laeufen)
+function Update-Item($item) {
+    $inf = $script:taskInfo[$item.Id]
+    $f = Join-Path $script:stateDir "$($item.Id).state"
+    $when = ''
+    if (Test-Path -LiteralPath $f) {
+        $d = (Get-Item -LiteralPath $f).LastWriteTime
+        $when = if ($d.Date -eq [datetime]::Today) { 'heute ' + $d.ToString('HH:mm') } elseif ($d.Date -eq [datetime]::Today.AddDays(-1)) { 'gestern ' + $d.ToString('HH:mm') } else { $d.ToString('dd.MM.yyyy') }
+    }
+    if ($inf -and $inf.Failed) { $item.Dot = $script:br.Err; $item.Sub = 'nicht gelaufen, siehe Liste' }
+    elseif ($inf -and $inf.Errors -gt 0) { $item.Dot = $script:br.Err; $item.Sub = "$when, $($inf.Errors) Fehler" }
+    elseif ($inf -and $inf.Cancelled) { $item.Dot = $script:br.Warn; $item.Sub = 'abgebrochen' }
+    elseif ($when) { $item.Dot = $script:br.Ok; $item.Sub = "zuletzt $when" }
+    else { $item.Dot = $script:br.Border; $item.Sub = 'noch nie gelaufen' }
+}
+function Set-TaskInfo($x) {
+    $script:taskInfo[$x[0]] = @{ Failed = $x[1]; Errors = $x[2]; Cancelled = $x[3] }
+    foreach ($it in $script:items) { if ($it.Id -eq $x[0]) { Update-Item $it } }
+}
+function Update-DirsButton {
+    $n = if ($script:cur) { @($script:cur.ExcludeDirs | Where-Object { $_ }).Count } else { 0 }
+    $ui.btnDirs.Content = $(if ($n -gt 0) { "Ordner abwählen ($n)" } else { 'Ordner abwählen ...' })
+}
 function Refresh-List([int]$select) {
     $script:loading = $true
-    $lb.Items.Clear()
-    foreach ($t in $script:tasks) { [void]$lb.Items.Add([string]$t.Name) }
-    if ($select -ge 0 -and $select -lt $lb.Items.Count) { $lb.SelectedIndex = $select }
+    $script:items.Clear()
+    foreach ($t in $script:tasks) { $it = [DirToyTask]::new(); $it.Id = [string]$t.Id; $it.Name = [string]$t.Name; Update-Item $it; $script:items.Add($it) }
+    $ui.lb.SelectedIndex = $(if ($select -ge 0 -and $select -lt $script:items.Count) { $select } else { -1 })
     $script:loading = $false
     Show-Cur
 }
+function Show-Mode([int]$m) { $ui.lblMode.Text = $script:modeHelp[$m]; Show-Direction $m }
 function Show-Cur {
-    $i = $lb.SelectedIndex
+    $i = $ui.lb.SelectedIndex
     $script:loading = $true
     if ($i -ge 0) {
         $script:cur = $script:tasks[$i]
-        $tbName.Text = [string]$script:cur.Name; $tbA.Text = [string]$script:cur.A; $tbB.Text = [string]$script:cur.B
-        $mi = [int]$script:cur.Mode; if ($mi -lt 0 -or $mi -ge $cmb.Items.Count) { $mi = 0 }; $cmb.SelectedIndex = $mi; $tbEx.Text = [string]$script:cur.Exclude
+        $ui.tbName.Text = [string]$script:cur.Name; $ui.tbA.Text = [string]$script:cur.A; $ui.tbB.Text = [string]$script:cur.B; $ui.tbEx.Text = [string]$script:cur.Exclude
+        $mi = [int]$script:cur.Mode; if ($mi -lt 0 -or $mi -gt 2) { $mi = 0 }
+        $ui["m$mi"].IsChecked = $true; Show-Mode $mi
     } else {
         $script:cur = $null
-        $tbName.Text = ''; $tbA.Text = ''; $tbB.Text = ''; $cmb.SelectedIndex = -1; $tbEx.Text = ''
+        $ui.tbName.Text = ''; $ui.tbA.Text = ''; $ui.tbB.Text = ''; $ui.tbEx.Text = ''; $ui.lblMode.Text = ''
+        foreach ($k in 'm0', 'm1', 'm2') { $ui[$k].IsChecked = $false }
     }
-    foreach ($c in $editors) { $c.Enabled = ($i -ge 0) }
-    $btnA.Enabled = $btnB.Enabled = ($i -ge 0)
-    $btnAll.Enabled = ($script:tasks.Count -gt 0)
+    $ui.lblA.Text = Get-LeafName $ui.tbA.Text; $ui.lblB.Text = Get-LeafName $ui.tbB.Text
     $script:loading = $false
+    Update-Enabled
     Update-SchedLabel
     Update-DirsButton
 }
-$script:busy = $false
-$script:closeRequested = $false
+function Update-Enabled {
+    $has = [bool]$script:cur
+    foreach ($c in $script:editors) { $c.IsEnabled = $has }
+    foreach ($c in $script:actions) { $c.IsEnabled = ($has -and -not $script:busy) }
+    $ui.btnAll.IsEnabled = ($script:tasks.Count -gt 0 -and -not $script:busy)
+    $ui.btnNew.IsEnabled = $ui.lb.IsEnabled = $ui.btnTheme.IsEnabled = (-not $script:busy)
+}
 function Set-Busy([bool]$busy) {
     $script:busy = $busy
     if ($busy) { $script:cancel = $false }
-    foreach ($c in @($btnPrev, $btnRun, $btnAll, $btnNew, $btnDel, $btnSched, $btnDirs, $lb)) { $c.Enabled = -not $busy }
-    $btnRun.Visible = -not $busy
-    $btnCancel.Visible = $busy; $btnCancel.Enabled = $busy; $btnCancel.Text = 'Abbrechen'
-    if (-not $busy) {
+    $ui.btnRun.Visibility = $(if ($busy) { 'Collapsed' } else { 'Visible' })
+    $ui.btnCancel.Visibility = $(if ($busy) { 'Visible' } else { 'Collapsed' })
+    $ui.btnCancel.IsEnabled = $busy; $ui.btnCancel.Content = 'Abbrechen'
+    if ($busy) { Update-Enabled }
+    else {
         Show-Cur
-        if ($script:closeRequested) { $form.Close() }
+        if ($script:closeRequested) { $win.Close() }
     }
 }
 
-$lb.Add_SelectedIndexChanged({ if (-not $script:loading) { Show-Cur } })
-$tbName.Add_TextChanged({
+$ui.lb.Add_SelectionChanged({ if (-not $script:loading) { Set-Opacity $ui.done 0; Show-Cur } })
+$ui.tbName.Add_TextChanged({
     if ($script:loading -or -not $script:cur) { return }
-    $script:cur.Name = $tbName.Text
-    $i = $lb.SelectedIndex
-    $script:loading = $true; $lb.Items[$i] = $tbName.Text; $lb.SelectedIndex = $i; $script:loading = $false
+    $script:cur.Name = $ui.tbName.Text
+    foreach ($it in $script:items) { if ($it.Id -eq $script:cur.Id) { $it.Name = $ui.tbName.Text } }
     Save-Tasks
 })
-$tbA.Add_TextChanged({ if (-not $script:loading -and $script:cur) { $script:cur.A = $tbA.Text; Save-Tasks } })
-$tbB.Add_TextChanged({ if (-not $script:loading -and $script:cur) { $script:cur.B = $tbB.Text; Save-Tasks } })
-$tbEx.Add_TextChanged({ if (-not $script:loading -and $script:cur) { $script:cur.Exclude = $tbEx.Text; Save-Tasks } })
-$cmb.Add_SelectedIndexChanged({ if (-not $script:loading -and $script:cur -and $cmb.SelectedIndex -ge 0) { $script:cur.Mode = $cmb.SelectedIndex; Save-Tasks } })
-
+$ui.tbA.Add_TextChanged({ $ui.lblA.Text = Get-LeafName $ui.tbA.Text; if (-not $script:loading -and $script:cur) { $script:cur.A = $ui.tbA.Text; Save-Tasks } })
+$ui.tbB.Add_TextChanged({ $ui.lblB.Text = Get-LeafName $ui.tbB.Text; if (-not $script:loading -and $script:cur) { $script:cur.B = $ui.tbB.Text; Save-Tasks } })
+$ui.tbEx.Add_TextChanged({ if (-not $script:loading -and $script:cur) { $script:cur.Exclude = $ui.tbEx.Text; Save-Tasks } })
+foreach ($k in 'm0', 'm1', 'm2') {
+    $ui[$k].Add_Checked({
+        if ($script:loading -or -not $script:cur) { return }
+        $script:cur.Mode = [int]$this.Name.Substring(1); Show-Mode $script:cur.Mode; Save-Tasks
+    })
+}
 function Pick-Folder($tb) {
     $d = New-Object System.Windows.Forms.FolderBrowserDialog
     if ($tb.Text -and (Test-Path -LiteralPath $tb.Text)) { $d.SelectedPath = $tb.Text }
-    if ($d.ShowDialog() -eq 'OK') { $tb.Text = $d.SelectedPath }
+    if ($d.ShowDialog($form) -eq 'OK') { $tb.Text = $d.SelectedPath }
 }
-$btnA.Add_Click({ Pick-Folder $tbA })
-$btnB.Add_Click({ Pick-Folder $tbB })
+$ui.btnA.Add_Click({ Pick-Folder $ui.tbA })
+$ui.btnB.Add_Click({ Pick-Folder $ui.tbB })
+$ui.btnGear.Add_Click({ $ui.gear.Visibility = $(if ($ui.gear.Visibility -eq 'Visible') { 'Collapsed' } else { 'Visible' }) })
 
-$btnNew.Add_Click({
+function New-TaskNow {
     $t = New-Task ('Aufgabe ' + ($script:tasks.Count + 1))
     $script:tasks = @($script:tasks) + $t
-    Save-Tasks; Refresh-List ($script:tasks.Count - 1); $tbName.Focus(); $tbName.SelectAll()
-})
-$btnDel.Add_Click({
-    $i = $lb.SelectedIndex; if ($i -lt 0) { return }
+    Save-Tasks; Refresh-List ($script:tasks.Count - 1); [void]$ui.tbName.Focus(); $ui.tbName.SelectAll()
+}
+$ui.btnNew.Add_Click({ New-TaskNow })
+$ui.btnDel.Add_Click({
+    $i = $ui.lb.SelectedIndex; if ($i -lt 0) { return }
     $t = $script:tasks[$i]
     if ((Show-Msg "Aufgabe '$($t.Name)' löschen?`n(Die Ordner und Dateien bleiben unverändert.)" 'Löschen' 'YesNo' 'Question') -ne 'Yes') { return }
     try { Unregister-Sched $t } catch { }
@@ -80,47 +126,43 @@ $btnDel.Add_Click({
     Remove-Item (Join-Path $script:stateDir "$($t.Id).json"), (Join-Path $script:stateDir "$($t.Id).state") -ErrorAction SilentlyContinue
     Save-Tasks; Refresh-List ([math]::Min($i, $script:tasks.Count - 1))
 })
-
-$btnHelp.Add_Click({ Show-Help })
-$lblVer.Add_Click({ Start-UpdateCheck $true })
-$btnUpd.Add_Click({ if ($script:updInfo) { Do-UpdateAction $script:updInfo (Show-UpdateDialog $script:updInfo 'new') } })
-$btnTheme.Add_Click({
+$ui.btnHelp.Add_Click({ Show-Help })
+$ui.lblVer.Add_Click({ Start-UpdateCheck $true })
+$ui.btnUpd.Add_Click({ if ($script:updInfo) { Do-UpdateAction $script:updInfo (Show-UpdateDialog $script:updInfo 'new') } })
+$ui.btnTheme.Add_Click({
     if ($script:busy) { return }
     $next = @{ auto = 'hell'; hell = 'dunkel'; dunkel = 'auto' }[$script:themeSetting]
     Set-ThemeSetting $next
     Save-Tasks
     # Design wird beim Aufbau des Fensters gesetzt: Programm kurz neu starten
     Restart-DirToy
-
-    $form.Close()
+    $win.Close()
 })
-$btnLog.Add_Click({
+$ui.btnLog.Add_Click({
     if (Test-Path $script:logFile) { Start-Process notepad.exe -ArgumentList "`"$($script:logFile)`"" }
     else { [void](Show-Msg 'Es gibt noch kein Protokoll. Es entsteht beim ersten Sync-Lauf.' 'Protokoll') }
 })
-$btnDirs.Add_Click({
-    if (-not $script:cur) { return }
-    Show-FolderDialog $script:cur; Update-DirsButton
-})
-$btnSched.Add_Click({
-    if (-not $script:cur) { return }
-    Show-ScheduleDialog $script:cur; Update-SchedLabel
-})
+$ui.btnDirs.Add_Click({ if ($script:cur) { Show-FolderDialog $script:cur; Update-DirsButton } })
+$ui.btnSched.Add_Click({ if ($script:cur) { Show-ScheduleDialog $script:cur; Update-SchedLabel } })
 # Lauf starten; schlaegt schon der Start fehl, wird das Fenster wieder freigegeben
 function Invoke-Run($tasks, [bool]$preview, [string]$doneText, [bool]$showResult) {
     if ($script:busy) { return }
     Clear-Log; Set-Busy $true
-    try { Start-SyncJob $tasks $preview $doneText $showResult }
-    catch { $m = $_.Exception.Message; $script:job = $null; $script:brg = $null; Set-Busy $false; [void](Show-Msg "Der Lauf konnte nicht gestartet werden:`n`n$m" 'DirToy' 'OK' 'Error') }
+    try {
+        Start-Flow $(if (@($tasks).Count -eq 1) { [int]@($tasks)[0].Mode } else { 0 }) $preview
+        $ui.task.ProgressState = 'Normal'; $ui.task.ProgressValue = 0
+        Start-SyncJob $tasks $preview $doneText $showResult
+    }
+    catch { $m = $_.Exception.Message; $script:job = $null; $script:brg = $null; Stop-Flow 'err'; $ui.task.ProgressState = 'None'; Set-Busy $false; [void](Show-Msg "Der Lauf konnte nicht gestartet werden:`n`n$m" 'DirToy' 'OK' 'Error') }
 }
-$btnPrev.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $true 'Vorschau fertig.' $false } })
-$btnRun.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $false 'Fertig.' $true } })
-$btnAll.Add_Click({ Invoke-Run @($script:tasks) $false 'Alle Aufgaben abgearbeitet.' $true })
-$btnCancel.Add_Click({
-    Request-Cancel; $btnCancel.Enabled = $false; $btnCancel.Text = 'Bricht ab ...'
-    $lbl.Text = 'Wird nach der aktuellen Datei abgebrochen ...'
+$ui.btnPrev.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $true 'Vorschau fertig.' $false } })
+$ui.btnRun.Add_Click({ if ($script:cur) { Invoke-Run @($script:cur) $false 'Fertig.' $true } })
+$ui.btnAll.Add_Click({ Invoke-Run @($script:tasks) $false 'Alle Aufgaben abgearbeitet.' $true })
+$ui.btnCancel.Add_Click({
+    Request-Cancel; $ui.btnCancel.IsEnabled = $false; $ui.btnCancel.Content = 'Bricht ab ...'
+    $ui.lblStatus.Text = 'Wird nach der aktuellen Datei abgebrochen ...'
 })
-$form.Add_FormClosing({
+$win.Add_Closing({
     param($s, $e)
     if ($script:busy) {
         $q = "Es läuft noch ein Vorgang.`nJetzt abbrechen und beenden?`n`nDas Programm beendet sich nach der aktuellen Datei. Es bleiben keine halben Dateien zurück."
@@ -133,7 +175,7 @@ $form.Add_FormClosing({
 })
 
 Refresh-List 0
-$form.Add_Shown({
+$win.Add_ContentRendered({
     # Beim allerersten Start einmal anbieten, eine Desktop-Verknuepfung anzulegen (startet ohne aufblitzendes Fenster)
     if (-not [bool](Get-Setting 'ShortcutAsked' $false)) {
         Set-Setting 'ShortcutAsked' $true
@@ -151,11 +193,11 @@ $form.Add_Shown({
         ($_.SchedName -and -not (Get-SchedInfo $_)) -or ($_.Schedule -and -not $_.SchedName -and -not ($_.AutoLnk -and (Test-Path -LiteralPath ([string]$_.AutoLnk))))
     } | ForEach-Object { [string]$_.Name })
     if ($missing.Count -gt 0) {
-        $q = "Für diese Aufgaben ist ein Zeitplan gespeichert, er ist aber im Windows-Aufgabenplaner nicht vorhanden. Sie laufen daher NICHT automatisch:`n`n  " + ($missing -join "`n  ") + "`n`nBitte die Aufgabe wählen und unter `"Zeitplan ...`" neu aktivieren. Falls das nicht geht, zeigt DirToy dort eine Anleitung zum manuellen Anlegen."
+        $q = "Für diese Aufgaben ist ein Zeitplan gespeichert, er ist aber im Windows-Aufgabenplaner nicht vorhanden. Sie laufen daher NICHT automatisch:`n`n  " + ($missing -join "`n  ") + "`n`nBitte die Aufgabe wählen und oben rechts den Zeitplan neu aktivieren. Falls das nicht geht, zeigt DirToy dort eine Anleitung zum manuellen Anlegen."
         [void](Show-Msg $q 'DirToy - Zeitplan' 'OK' 'Warning')
     }
     if ([bool](Get-Setting 'UpdateCheck' $true)) { Start-UpdateCheck $false }
-    if ($script:tasks.Count -eq 0) { $btnNew.PerformClick() }
+    if ($script:tasks.Count -eq 0) { New-TaskNow }
 })
-[void]$form.ShowDialog()
+[void]$win.ShowDialog()
 Save-Tasks

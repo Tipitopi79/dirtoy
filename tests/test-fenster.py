@@ -20,7 +20,7 @@ for theme in ('dunkel', 'hell'):
     try:
         m = wait(p.pid, 'DirToy ' + VER)
         there = lambda: all(os.path.exists(f) for f in fs)
-        def start(): click(m, 'Synchronisieren'); return wait(p.pid, T)
+        def start(): mklick(m, 'btnRun'); return wait(p.pid, T)
         w = start(); shot(w, f'warn-{theme}.png'); key(w, 13); wait(p.pid, T, gone=True); time.sleep(0.7); check(theme + ': Enter = Nein, Dateien da', there())
         w = start(); key(w, 27); wait(p.pid, T, gone=True); time.sleep(0.7); check(theme + ': Esc = Nein, Dateien da', there())
         w = start(); u.PostMessageW(w, 0x0010, 0, 0); wait(p.pid, T, gone=True); time.sleep(0.7); check(theme + ': X = Nein, Dateien da', there())

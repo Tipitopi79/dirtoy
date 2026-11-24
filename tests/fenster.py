@@ -45,3 +45,18 @@ def shot(h, name):
     bi = ctypes.create_string_buffer(struct.pack('<IiiHHIIiiII', 40, w, -hh, 1, 32, 0, 0, 0, 0, 0, 0)); d = ctypes.create_string_buffer(w * hh * 4)
     g.GetDIBits(m, b, 0, hh, d, bi, 0)
     Image.frombuffer('RGB', (w, hh), d, 'raw', 'BGRX', 0, 1).save(os.path.join(out, name))
+# ---- Hauptfenster (WPF) ueber UI Automation
+_uia = None
+def uia(op, h, id, value=None):
+    global _uia
+    if _uia is None:
+        _uia = subprocess.Popen(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uia.ps1')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding='utf-8', creationflags=0x08000000)
+        _uia.stdout.readline()
+        import atexit; atexit.register(_uia.kill)
+    _uia.stdin.write(json.dumps(dict(op=op, hwnd=h, id=id, value=value)) + '\n'); _uia.stdin.flush()
+    r = json.loads(_uia.stdout.readline())
+    if not r['ok']: raise SystemExit(f'UIA {op} {id}: {r["error"]}')
+    return r
+def mklick(h, id):
+    if not uia('click', h, id)['found']: raise SystemExit('nicht gefunden: ' + id)
+def mstatus(h): return uia('get', h, 'lblStatus').get('name', '')
