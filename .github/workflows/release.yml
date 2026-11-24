@@ -15,6 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: DirToy.ps1 muss zu src passen
+        shell: pwsh
+        run: ./build.ps1 -Check
+
       - name: ZIP bauen
         run: |
           VER="${GITHUB_REF_NAME#v}"
