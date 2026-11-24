@@ -1,43 +1,47 @@
 ﻿# ---- Hilfe-Fenster
 function Show-Help {
-    $d = New-Object System.Windows.Forms.Form
-    $d.Text = 'DirToy - Hilfe'; $d.ClientSize = New-Object System.Drawing.Size(680, 640); $d.MinimumSize = New-Object System.Drawing.Size(520, 400)
-    $d.StartPosition = 'CenterParent'; $d.ShowInTaskbar = $false; $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
-    $rb = New-Object System.Windows.Forms.RichTextBox
-    $rb.ReadOnly = $true; $rb.BorderStyle = 'None'; $rb.BackColor = $th.Surface; $rb.ForeColor = $th.Text; $rb.Font = $fNormal
-    $rb.Location = New-Object System.Drawing.Point(24, 16); $rb.Size = New-Object System.Drawing.Size(632, 552); $rb.Anchor = $A_ALL
-    $rb.DetectUrls = $false; $rb.TabStop = $false
-    $d.Controls.Add($rb)
-    function HelpH($t) { $rb.SelectionStart = $rb.TextLength; $rb.SelectionFont = $fBold; $rb.SelectionColor = $th.Accent; $rb.AppendText("`n$t`n") }
-    function HelpP($t) { $rb.SelectionStart = $rb.TextLength; $rb.SelectionFont = $fNormal; $rb.SelectionColor = $th.Text; $rb.AppendText("$t`n") }
-    function HelpB($k, $t) {
-        $rb.SelectionStart = $rb.TextLength; $rb.SelectionFont = $fBold; $rb.SelectionColor = $th.Text; $rb.AppendText("   $k")
-        $rb.SelectionStart = $rb.TextLength; $rb.SelectionFont = $fNormal; $rb.SelectionColor = $th.Text; $rb.AppendText("  $t`n")
+    $dlg = New-Dlg 'DirToy - Hilfe' 'Width="760" Height="720" MinWidth="560" MinHeight="420"' '<DockPanel Margin="24,16,24,20">
+      <DockPanel DockPanel.Dock="Bottom" Margin="0,16,0,0" LastChildFill="False"><Button x:Name="lnk" Margin="0,0,16,0">Desktop-Verknüpfung</Button><CheckBox x:Name="showRes" VerticalAlignment="Center">Ergebnis-Fenster nach dem Lauf zeigen</CheckBox><Button x:Name="close" DockPanel.Dock="Right" Style="{StaticResource Primary}" IsCancel="True" IsDefault="True">Schließen</Button></DockPanel>
+      <ScrollViewer x:Name="sv" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="p" Margin="0,0,16,0"/></ScrollViewer></DockPanel>'
+    $script:hp = $dlg.p
+    $script:helpDlg = $dlg
+    function HelpT([string]$t, [double]$size, $brush, [string]$margin, [bool]$bold) {
+        $x = New-Object System.Windows.Controls.TextBlock; $x.Text = $t; $x.FontSize = $size; $x.Foreground = $brush; $x.Margin = $margin; $x.TextWrapping = 'Wrap'
+        if ($bold) { $x.FontWeight = 'SemiBold' }
+        [void]$script:hp.Children.Add($x); return
     }
-    $rb.SelectionStart = 0; $rb.SelectionFont = $fTitle; $rb.SelectionColor = $th.Accent; $rb.AppendText("DirToy`n")
-    $rb.SelectionStart = $rb.TextLength; $rb.SelectionFont = $fSmall; $rb.SelectionColor = $th.Muted; $rb.AppendText("Version $($script:version)`n`n")
+    function HelpH($t) { HelpT $t 16 $script:br.Accent '0,20,0,4' $true }
+    function HelpP($t) { HelpT ([string]$t).Trim() 14 $script:br.Text '0,3' $false }
+    function HelpB($k, $t) {
+        $x = New-Object System.Windows.Controls.TextBlock; $x.TextWrapping = 'Wrap'; $x.Margin = '12,3,0,3'
+        $r = New-Object System.Windows.Documents.Run "$k   "; $r.FontWeight = 'SemiBold'
+        $x.Inlines.Add($r); $x.Inlines.Add((New-Object System.Windows.Documents.Run ([string]$t)))
+        [void]$script:hp.Children.Add($x)
+    }
+    HelpT 'DirToy' 26 $script:br.Accent '0' $true
+    HelpT "Version $($script:version)" 12 $script:br.Muted '0,0,0,10' $false
     HelpP 'Hält zwei Ordner synchron. Du kannst beliebig viele Aufgaben anlegen, jede mit eigenen Ordnern, Modus, Ausschlüssen und Zeitplan.'
     HelpH 'So geht es'
-    HelpB '1.' 'Links auf "+ Neu" klicken und der Aufgabe einen Namen geben.'
-    HelpB '2.' 'Ordner A und Ordner B wählen (Button "...").'
+    HelpB '1.' 'Links auf "Neue Aufgabe" klicken und der Aufgabe einen Namen geben.'
+    HelpB '2.' 'Ordner A und Ordner B wählen (Knopf "..." neben dem Pfad).'
     HelpB '3.' 'Modus wählen (siehe unten).'
     HelpB '4.' '"Vorschau" zeigt, was passieren würde, ohne etwas zu verändern.'
-    HelpB '5.' '"Synchronisieren" führt es aus. Der Balken zeigt den Fortschritt, die Liste das Ergebnis.'
+    HelpB '5.' '"Starten" führt es aus. Zwischen den Ordnern siehst du die Richtung, der Balken zeigt den Fortschritt, die Liste das Ergebnis.'
     HelpH 'Die drei Modi'
     HelpB 'Synchronisieren' 'Beide Richtungen. Neue und geänderte Dateien werden auf die andere Seite kopiert, bei Änderungen auf beiden Seiten gewinnt die neuere Datei. Löscht du eine Datei auf einer Seite, wird sie beim nächsten Lauf auch auf der anderen gelöscht. Beim allerersten Lauf wird nichts gelöscht.'
     HelpB 'Echo' 'Nur A nach B. B wird zu einer exakten Kopie von A: Was in A fehlt, wird in B gelöscht, und Änderungen in B werden überschrieben.'
     HelpB 'Beitragen' 'Nur A nach B. Neue und geänderte Dateien aus A werden kopiert, es wird nie etwas gelöscht.'
     HelpP '   Bei gleicher Zeit, aber anderer Größe meldet das Tool einen Konflikt und überspringt die Datei.'
     HelpH 'Nicht synchronisieren'
-    HelpP 'Im Feld stehen Dateinamen oder Muster, getrennt mit Semikolon. * steht für beliebig viele Zeichen, ? für ein Zeichen. Die Muster gelten für Dateien und Ordnernamen in beiden Ordnern. Ausgeschlossenes wird weder kopiert noch gelöscht.'
+    HelpP 'Das Feld liegt hinter dem Zahnrad oben rechts. Darin stehen Dateinamen oder Muster, getrennt mit Semikolon. * steht für beliebig viele Zeichen, ? für ein Zeichen. Die Muster gelten für Dateien und Ordnernamen in beiden Ordnern. Ausgeschlossenes wird weder kopiert noch gelöscht.'
     HelpB 'Beispiele' 'Thumbs.db;*.tmp;~$*;node_modules;*.bak'
     HelpH 'Ordner abwählen'
-    HelpP 'Mit "Ordner wählen ..." siehst du beide Ordner als Baum nebeneinander. Entfernst du bei einem Ordner den Haken, wird er samt allen Unterordnern nicht synchronisiert (auf keiner Seite kopiert oder gelöscht). Der Haken gilt für beide Seiten. Neue Ordner, die später dazukommen, sind immer dabei, gespeichert werden nur die abgewählten. Ein abgewählter Ordner bleibt auch dann abgewählt, wenn er gelöscht und später neu angelegt wird; solche Einträge erscheinen grau mit "(nicht vorhanden)" und lassen sich durch Anhaken entfernen. "Alle wieder einschließen" setzt alle Haken zurück.'
+    HelpP 'Hinter dem Zahnrad oben rechts, mit "Ordner abwählen ...", siehst du beide Ordner als Baum nebeneinander. Entfernst du bei einem Ordner den Haken, wird er samt allen Unterordnern nicht synchronisiert (auf keiner Seite kopiert oder gelöscht). Der Haken gilt für beide Seiten. Neue Ordner, die später dazukommen, sind immer dabei, gespeichert werden nur die abgewählten. Ein abgewählter Ordner bleibt auch dann abgewählt, wenn er gelöscht und später neu angelegt wird; solche Einträge erscheinen grau mit "(nicht vorhanden)" und lassen sich durch Anhaken entfernen. "Alle wieder einschließen" setzt alle Haken zurück.'
     HelpH 'Löschen und Sicherheit'
     HelpP 'Dateien werden zuerst unter einem Zwischennamen (.dirtoy-tmp) kopiert und erst am Ende umbenannt. Bricht ein Lauf ab oder schließt du das Fenster, bleibt die alte Datei im Ziel unverändert; übrig gebliebene Zwischendateien räumt DirToy beim nächsten Lauf auf. Mit "Abbrechen" stoppst du einen Lauf nach der aktuellen Datei.'
-    HelpP 'Vor dem Löschen fragt das Tool nach. Gelöscht wird in den Papierkorb, bei Netzlaufwerken ohne Papierkorb aber endgültig. Schau dir deshalb bei "Synchronisieren" und "Echo" zuerst die Vorschau an. Ordner dürfen nicht identisch sein oder ineinander liegen. Ordner werden komplett mit allen Unterordnern gespiegelt, auch leere. Ein Ordner wird nur gelöscht, wenn er danach wirklich leer ist (ausgeschlossene Dateien darin verhindern das Löschen).'
+    HelpP 'Kann ein Ordner nicht gelesen werden, wird dort auf beiden Seiten nichts verändert. Vor dem Löschen fragt das Tool nach. Gelöscht wird in den Papierkorb, bei Netzlaufwerken ohne Papierkorb aber endgültig. Schau dir deshalb bei "Synchronisieren" und "Echo" zuerst die Vorschau an. Ordner dürfen nicht identisch sein oder ineinander liegen. Ordner werden komplett mit allen Unterordnern gespiegelt, auch leere. Ein Ordner wird nur gelöscht, wenn er danach wirklich leer ist (ausgeschlossene Dateien darin verhindern das Löschen).'
     HelpH 'Zeitplan (automatisch)'
-    HelpP 'Mit "Zeitplan ..." legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten (mit Startzeit) oder bei der Anmeldung. Täglich und wöchentlich lassen sich mit "Danach wiederholen alle ... Min. für ... Std." kombinieren (z. B. täglich ab 08:00 alle 20 Minuten für 10 Stunden). Du kannst den Eintrag im Aufgabenplaner jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt, bei Intervallen und Wiederholungen aber nicht. DirToy prüft nach dem Anlegen, ob der Eintrag wirklich existiert. Fehlen auf dem Rechner die Rechte (kein Administrator), zeigt DirToy eine Anleitung zum Anlegen von Hand, mit kopierbarem Befehl und als Notlösung einem Autostart-Eintrag. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen.'
+    HelpP 'Mit dem Zeitplan-Knopf oben rechts legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten (mit Startzeit) oder bei der Anmeldung. Täglich und wöchentlich lassen sich mit "Danach wiederholen alle ... Min. für ... Std." kombinieren (z. B. täglich ab 08:00 alle 20 Minuten für 10 Stunden). Du kannst den Eintrag im Aufgabenplaner jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt, bei Intervallen und Wiederholungen aber nicht. DirToy prüft nach dem Anlegen, ob der Eintrag wirklich existiert. Fehlen auf dem Rechner die Rechte (kein Administrator), zeigt DirToy eine Anleitung zum Anlegen von Hand, mit kopierbarem Befehl und als Notlösung einem Autostart-Eintrag. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen. Wirkt eine Löschung auffällig (eine Seite ist ganz leer, oder mindestens 10 Dateien und mehr als die Hälfte würden gelöscht), bricht der automatische Lauf ab, ohne etwas zu verändern. Ist das gewollt, die Aufgabe einmal von Hand starten.'
     HelpP 'Nach einem automatischen Lauf kann eine Windows-Meldung erscheinen: nie, wenn etwas passiert ist oder Fehler auftraten, oder nur bei Fehlern.'
     HelpH 'Große Vorschau'
     HelpP 'Die Liste zeigt höchstens 2000 Zeilen. Gibt es mehr Aktionen, steht am Ende die Zeile "... und N weitere Aktionen": Ein Doppelklick darauf öffnet die komplette Vorschau als CSV-Datei (DirToy-Daten\vorschau.csv, z. B. in Excel) mit den Spalten Aktion, Ordner, Datei und Relativer Pfad, die du dort filtern und sortieren kannst. Die Summen je Aktion stehen schon in der Liste. Bei einem echten Lauf läuft die Liste mit: Es bleiben die letzten 2000 Aktionen sichtbar, die ältesten fallen oben heraus (Fehler werden am Ende noch einmal aufgelistet). Alle Aktionen werden ausgeführt und stehen im Protokoll.'
@@ -50,23 +54,14 @@ function Show-Help {
     HelpP 'Beim Start fragt DirToy im Hintergrund bei GitHub nach einer neueren Version (nur die Versionsnummer wird abgefragt, es werden keine Daten von dir gesendet). Gibt es eine, erscheint links der Button "Update verfügbar". Dort kannst du "Jetzt aktualisieren" wählen (lädt DirToy.ps1 aus dem Release, prüft sie, sichert die alte Datei als DirToy.ps1.bak-<Version> und startet neu) oder die Release-Seite im Browser öffnen. Ein Klick auf "Updates prüfen" unter dem Titel sucht von Hand; dort lässt sich die automatische Suche auch abschalten. Aufgaben im Aufgabenplaner suchen nie nach Updates.'
     HelpH 'Wo liegen meine Daten?'
     HelpP 'Aufgaben und Zeitpläne stehen in DirToy-Daten\aufgaben.json neben dem Programm. Darf DirToy dort nicht schreiben (z. B. in C:\Program Files ohne Administratorrechte), nutzt es automatisch den Ordner %APPDATA%\DirToy und übernimmt vorhandene Aufgaben dorthin. Verschiebst du DirToy.ps1, speichere die Zeitpläne danach einmal neu. Bei Startproblemen steht der Grund in DirToy-Daten\fehler.log.'
-    $rb.SelectionStart = 0; $rb.ScrollToCaret()
-    $bs = New-Btn $d 24 584 200 36 'Desktop-Verknüpfung' $false $th.Surface; $bs.Anchor = $A_BL
-    $bs.Add_Click({
+    $dlg.showRes.IsChecked = [bool](Get-Setting 'ShowResult' $true)
+    $dlg.showRes.Add_Checked({ Set-Setting 'ShowResult' $true }); $dlg.showRes.Add_Unchecked({ Set-Setting 'ShowResult' $false })
+    $dlg.lnk.Add_Click({
         $p = New-DesktopShortcut
         if ($p) { [void](Show-Msg "Die Verknüpfung wurde auf dem Desktop angelegt:`n$p" 'DirToy' 'OK' 'Information') }
         else { [void](Show-Msg 'Die Verknüpfung konnte nicht angelegt werden.' 'DirToy' 'OK' 'Warning') }
     })
-    $cbr = New-Object System.Windows.Forms.CheckBox; $cbr.Text = 'Ergebnis-Fenster nach dem Lauf zeigen'; $cbr.AutoSize = $true; $cbr.BackColor = [System.Drawing.Color]::Transparent
-    $cbr.Checked = [bool](Get-Setting 'ShowResult' $true); $cbr.Location = New-Object System.Drawing.Point(240, 592); $cbr.Anchor = $A_BL
-    $cbr.Add_CheckedChanged({ Set-Setting 'ShowResult' $this.Checked })
-    $d.Controls.Add($cbr)
-    $bc = New-Btn $d 556 584 100 36 'Schließen' $true $null; $bc.Anchor = $A_BR
-    $script:helpClose = $bc
-    $bc.Add_Click({ $script:helpClose.FindForm().Close() })
-    $d.Add_HandleCreated({
-        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($script:helpClose.FindForm().Handle, 20, [ref]$v, 4) } catch { }
-    })
-    [void]$d.ShowDialog($form)
-    $d.Dispose()
+    $dlg.close.Add_Click({ $script:helpDlg.Win.Close() })
+    Show-Dlg $dlg
 }
+

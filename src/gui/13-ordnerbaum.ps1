@@ -15,9 +15,8 @@ function Test-AncExcluded([string]$path) {
     return $false
 }
 function New-TreeNodeFor([string]$text, [string]$path, [string]$kind, [string]$root) {
-    $n = New-Object System.Windows.Forms.TreeNode($text)
-    $n.Tag = @{ Path = $path; Kind = $kind; Root = $root; Loaded = ($kind -ne 'normal') }
-    if ($kind -eq 'normal') { [void]$n.Nodes.Add((New-Object System.Windows.Forms.TreeNode('...'))) }   # Platzhalter fuer Pfeil
+    $n = [DirToyNode]::new(); $n.Text = $text; $n.Path = $path; $n.Kind = $kind; $n.Root = $root; $n.Loaded = ($kind -ne 'normal')
+    if ($kind -eq 'normal') { $x = [DirToyNode]::new(); $x.Text = '...'; $x.Kind = 'dummy'; $x.Loaded = $true; $n.Nodes.Add($x) }   # Platzhalter fuer Pfeil
     return $n
 }
 function Fill-Nodes($coll, [string]$parentPath, [string]$root) {
@@ -27,43 +26,39 @@ function Fill-Nodes($coll, [string]$parentPath, [string]$root) {
     foreach ($d in $dirs) {
         if ($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
         $p = $parentPath + $d.Name + '\'
-        if (Test-Excluded $d.Name $script:fdPats) { [void]$coll.Add((New-TreeNodeFor ($d.Name + '   (durch Muster ausgeschlossen)') $p 'pattern' $root)) }
-        else { [void]$coll.Add((New-TreeNodeFor $d.Name $p 'normal' $root)) }
+        if (Test-Excluded $d.Name $script:fdPats) { $coll.Add((New-TreeNodeFor ($d.Name + '   (durch Muster ausgeschlossen)') $p 'pattern' $root)) }
+        else { $coll.Add((New-TreeNodeFor $d.Name $p 'normal' $root)) }
     }
     # abgewaehlte Ordner, die es nirgends mehr gibt
     foreach ($x in @($script:fdSet | Sort-Object)) {
         if (Test-ExistsAny $x) { continue }
         $par = Get-ParentPath $x
         $orphan = ($par -ne '') -and -not (Test-ExistsAny $par)
-        if ($parentPath -eq '' -and $orphan) { [void]$coll.Add((New-TreeNodeFor ($x.TrimEnd('\') + '   (nicht vorhanden)') $x 'missing' $root)) }
+        if ($parentPath -eq '' -and $orphan) { $coll.Add((New-TreeNodeFor ($x.TrimEnd('\') + '   (nicht vorhanden)') $x 'missing' $root)) }
         elseif ($par -eq $parentPath -and -not $orphan) {
             $name = $x.TrimEnd('\').Substring($par.Length)
-            [void]$coll.Add((New-TreeNodeFor ($name + '   (nicht vorhanden)') $x 'missing' $root))
+            $coll.Add((New-TreeNodeFor ($name + '   (nicht vorhanden)') $x 'missing' $root))
         }
     }
 }
 function Update-TreeChecks($nodes) {
     foreach ($n in $nodes) {
-        $tag = $n.Tag
-        if ($null -eq $tag) { continue }
-        $excl = ($tag.Kind -ne 'normal') -or (Test-EffExcluded $tag.Path)
+        if ($n.Kind -eq 'dummy') { continue }
+        $excl = ($n.Kind -ne 'normal') -or (Test-EffExcluded $n.Path)
         $n.Checked = -not $excl
-        $n.ForeColor = $(if ($excl) { $th.Muted } else { $th.Text })
-        if ($tag.Loaded -and $n.Nodes.Count -gt 0) { Update-TreeChecks $n.Nodes }
+        $n.Brush = $(if ($excl) { $script:br.Muted } else { $script:br.Text })
+        if ($n.Loaded -and $n.Nodes.Count -gt 0) { Update-TreeChecks $n.Nodes }
     }
 }
 function Refresh-Trees {
-    $script:fdUpdating = $true
-    try { foreach ($tv in @($script:fdTvA, $script:fdTvB)) { Update-TreeChecks $tv.Nodes } }
-    finally { $script:fdUpdating = $false }
-    $script:fdCount.Text = "$($script:fdSet.Count) Ordner abgewählt"
+    foreach ($c in @($script:fdA, $script:fdB)) { Update-TreeChecks $c }
+    $script:fdDlg.count.Text = "$($script:fdSet.Count) Ordner abgewählt"
 }
 function Remove-MissingIn($coll, [string]$path) {
     for ($i = $coll.Count - 1; $i -ge 0; $i--) {
-        $n = $coll[$i]; $tag = $n.Tag
-        if ($null -eq $tag) { continue }
-        if ($tag.Kind -eq 'missing' -and $tag.Path -ieq $path) { $coll.RemoveAt($i) }
-        elseif ($tag.Loaded -and $n.Nodes.Count -gt 0) { Remove-MissingIn $n.Nodes $path }
+        $n = $coll[$i]
+        if ($n.Kind -eq 'missing' -and $n.Path -ieq $path) { $coll.RemoveAt($i) }
+        elseif ($n.Loaded -and $n.Nodes.Count -gt 0) { Remove-MissingIn $n.Nodes $path }
     }
 }
 function Show-FolderDialog($t) {
@@ -78,79 +73,59 @@ function Show-FolderDialog($t) {
     $script:fdTask = $t
     $script:fdPats = Get-Patterns $t
     $script:fdSet = Get-ExcludeDirs $t
-    $script:fdUpdating = $false
-
-    $d = New-Object System.Windows.Forms.Form
-    $script:fdForm = $d
-    $d.Text = 'Ordner auswählen'; $d.ClientSize = New-Object System.Drawing.Size(1000, 680); $d.StartPosition = 'CenterParent'
-    $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false; $d.ShowInTaskbar = $false
-    $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
-    $h = New-Object System.Windows.Forms.Label; $h.Text = 'Ordner auswählen'; $h.Font = $fBold; $h.AutoSize = $false; $h.TextAlign = 'MiddleLeft'
-    [void](Add-To $d $h 20 12 700 28)
-    [void](New-Label $d 20 40 960 'Haken entfernen = Ordner samt Unterordnern wird nicht synchronisiert. Neue Ordner sind standardmäßig dabei (Haken gesetzt).' $true)
-    [void](New-Label $d 20 76 470 ('A:  ' + $script:fdRootA) $true)
-    [void](New-Label $d 510 76 470 ('B:  ' + $script:fdRootB) $true)
-    $mk = {
-        param($x)
-        $tv = New-Object System.Windows.Forms.TreeView
-        $tv.CheckBoxes = $true; $tv.BorderStyle = 'FixedSingle'; $tv.BackColor = $th.Input; $tv.ForeColor = $th.Text; $tv.Font = $fNormal
-        $tv.ShowLines = $true; $tv.ItemHeight = 24; $tv.HideSelection = $false
-        [void](Add-To $d $tv $x 100 470 470)
-        return $tv
-    }
-    $script:fdTvA = & $mk 20
-    $script:fdTvB = & $mk 510
-    $script:fdHint = New-Label $d 20 580 960 '' $true
-    $script:fdCount = New-Label $d 20 604 500 '' $true
-    $bAll = New-Btn $d 20 634 210 34 'Alle wieder einschließen' $false $th.Surface
-    $bOk = New-Btn $d 770 634 100 34 'OK' $true $null
-    $bCancel = New-Btn $d 880 634 100 34 'Abbrechen' $false $th.Surface
-
-    $expand = {
+    $tree = '<TreeView x:Name="{0}" Background="Transparent" BorderThickness="0" AutomationProperties.Name="{1}"><TreeView.ItemTemplate><HierarchicalDataTemplate ItemsSource="{{Binding Nodes}}"><CheckBox IsChecked="{{Binding Checked, Mode=TwoWay}}" AutomationProperties.Name="{{Binding Text}}"><TextBlock Text="{{Binding Text}}" Foreground="{{Binding Brush}}"/></CheckBox></HierarchicalDataTemplate></TreeView.ItemTemplate></TreeView>'
+    $dlg = New-Dlg 'Ordner auswählen' 'Width="1020" Height="720" MinWidth="700" MinHeight="460"' ('<DockPanel Margin="24">
+      <TextBlock DockPanel.Dock="Top" Text="Ordner auswählen" FontSize="20" FontWeight="SemiBold"/>
+      <TextBlock DockPanel.Dock="Top" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,14" Text="Haken entfernen = Ordner samt Unterordnern wird nicht synchronisiert. Neue Ordner sind standardmäßig dabei (Haken gesetzt)."/>
+      <DockPanel DockPanel.Dock="Bottom" Margin="0,14,0,0" LastChildFill="False"><Button x:Name="all">Alle wieder einschließen</Button><TextBlock x:Name="count" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="14,0"/><Button x:Name="cancel" DockPanel.Dock="Right" IsCancel="True">Abbrechen</Button><Button x:Name="ok" DockPanel.Dock="Right" Style="{StaticResource Primary}" IsDefault="True" MinWidth="100" Margin="0,0,8,0">OK</Button></DockPanel>
+      <TextBlock x:Name="hint" DockPanel.Dock="Bottom" Style="{StaticResource MutedText}" Foreground="{DynamicResource Warn}" Margin="0,10,0,0"/>
+      <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
+        <Border Background="{DynamicResource Surface}" CornerRadius="12" Padding="12"><DockPanel><TextBlock x:Name="la" DockPanel.Dock="Top" Style="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" Margin="4,0,0,8"/>' + ($tree -f 'tvA', 'Ordner A') + '</DockPanel></Border>
+        <Border Grid.Column="2" Background="{DynamicResource Surface}" CornerRadius="12" Padding="12"><DockPanel><TextBlock x:Name="lb" DockPanel.Dock="Top" Style="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" Margin="4,0,0,8"/>' + ($tree -f 'tvB', 'Ordner B') + '</DockPanel></Border></Grid></DockPanel>')
+    $script:fdDlg = $dlg
+    $dlg.la.Text = 'A:  ' + $script:fdRootA; $dlg.lb.Text = 'B:  ' + $script:fdRootB
+    $script:fdA = [System.Collections.ObjectModel.ObservableCollection[DirToyNode]]::new()
+    $script:fdB = [System.Collections.ObjectModel.ObservableCollection[DirToyNode]]::new()
+    $dlg.tvA.ItemsSource = $script:fdA; $dlg.tvB.ItemsSource = $script:fdB
+    $expand = [System.Windows.RoutedEventHandler] {
         param($s, $e)
-        $tag = $e.Node.Tag
-        if ($null -ne $tag -and -not $tag.Loaded) {
-            $tag.Loaded = $true
-            Fill-Nodes $e.Node.Nodes $tag.Path $tag.Root
-            Refresh-Trees
-        }
+        $n = $e.OriginalSource.DataContext
+        if ($n -is [DirToyNode] -and -not $n.Loaded) { $n.Loaded = $true; Fill-Nodes $n.Nodes $n.Path $n.Root; Refresh-Trees }
     }
-    $script:fdTvA.Add_BeforeExpand($expand); $script:fdTvB.Add_BeforeExpand($expand)
-    $checked = {
+    $checked = [System.Windows.RoutedEventHandler] {
         param($s, $e)
-        if ($script:fdUpdating) { return }
-        $n = $e.Node; $tag = $n.Tag
-        if ($null -eq $tag) { return }
-        $script:fdHint.Text = ''
-        $revert = $false
-        if ($tag.Kind -eq 'pattern') { $revert = $true; $script:fdHint.Text = 'Dieser Ordner ist durch ein Muster im Ausschlussfeld ausgeschlossen.' }
-        elseif ($n.Checked -and (Test-AncExcluded $tag.Path)) { $revert = $true; $script:fdHint.Text = 'Ein übergeordneter Ordner ist abgewählt. Dort zuerst den Haken wieder setzen.' }
-        if ($revert) { $script:fdUpdating = $true; $n.Checked = -not $n.Checked; $script:fdUpdating = $false; return }
+        if ($e.OriginalSource -isnot [System.Windows.Controls.CheckBox]) { return }
+        $n = $e.OriginalSource.DataContext
+        if ($n -isnot [DirToyNode] -or $n.Kind -eq 'dummy') { return }
+        # kam die Aenderung aus dem Baum selbst (Haken passt schon zur Auswahl)? Dann nichts tun
+        if ($n.Checked -eq ($n.Kind -eq 'normal' -and -not (Test-EffExcluded $n.Path))) { return }
+        $script:fdDlg.hint.Text = ''
+        if ($n.Kind -eq 'pattern') { $n.Checked = $false; $script:fdDlg.hint.Text = 'Dieser Ordner ist durch ein Muster im Ausschlussfeld ausgeschlossen.'; return }
+        if ($n.Checked -and (Test-AncExcluded $n.Path)) { $n.Checked = $false; $script:fdDlg.hint.Text = 'Ein übergeordneter Ordner ist abgewählt. Dort zuerst den Haken wieder setzen.'; return }
         if ($n.Checked) {
-            [void]$script:fdSet.Remove($tag.Path)
-            if ($tag.Kind -eq 'missing') { Remove-MissingIn $script:fdTvA.Nodes $tag.Path; Remove-MissingIn $script:fdTvB.Nodes $tag.Path }
-        } else { [void]$script:fdSet.Add($tag.Path) }
+            [void]$script:fdSet.Remove($n.Path)
+            if ($n.Kind -eq 'missing') { Remove-MissingIn $script:fdA $n.Path; Remove-MissingIn $script:fdB $n.Path }
+        } else { [void]$script:fdSet.Add($n.Path) }
         Refresh-Trees
     }
-    $script:fdTvA.Add_AfterCheck($checked); $script:fdTvB.Add_AfterCheck($checked)
-    $bAll.Add_Click({
+    foreach ($tv in $dlg.tvA, $dlg.tvB) {
+        $tv.AddHandler([System.Windows.Controls.TreeViewItem]::ExpandedEvent, $expand)
+        $tv.AddHandler([System.Windows.Controls.Primitives.ToggleButton]::CheckedEvent, $checked)
+        $tv.AddHandler([System.Windows.Controls.Primitives.ToggleButton]::UncheckedEvent, $checked)
+    }
+    $dlg.all.Add_Click({
         $script:fdSet.Clear()
-        Fill-Nodes $script:fdTvA.Nodes '' $script:fdRootA; Fill-Nodes $script:fdTvB.Nodes '' $script:fdRootB
+        Fill-Nodes $script:fdA '' $script:fdRootA; Fill-Nodes $script:fdB '' $script:fdRootB
         Refresh-Trees
     })
-    $bOk.Add_Click({
+    $dlg.ok.Add_Click({
         $script:fdTask.ExcludeDirs = [string[]]@($script:fdSet | Sort-Object)
         Save-Tasks
-        $script:fdForm.DialogResult = 'OK'
+        $script:fdDlg.Win.Close()
     })
-    $bCancel.Add_Click({ $script:fdForm.DialogResult = 'Cancel' })
-    $d.Add_HandleCreated({
-        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($script:fdForm.Handle, 20, [ref]$v, 4) } catch { }
-    })
-
-    Fill-Nodes $script:fdTvA.Nodes '' $script:fdRootA
-    Fill-Nodes $script:fdTvB.Nodes '' $script:fdRootB
+    $dlg.cancel.Add_Click({ $script:fdDlg.Win.Close() })
+    Fill-Nodes $script:fdA '' $script:fdRootA
+    Fill-Nodes $script:fdB '' $script:fdRootB
     Refresh-Trees
-    [void]$d.ShowDialog($form)
-    $d.Dispose()
+    Show-Dlg $dlg
 }

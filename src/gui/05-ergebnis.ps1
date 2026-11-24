@@ -32,87 +32,71 @@ function Write-ResultFile($results) {
 }
 function Show-ResultDialog($results) {
     $multi = (@($results).Count -gt 1)
-    $d = New-Object System.Windows.Forms.Form
-    $d.Text = 'DirToy - Ergebnis'; $d.ClientSize = New-Object System.Drawing.Size(840, 620); $d.MinimumSize = New-Object System.Drawing.Size(620, 460)
-    $d.StartPosition = 'CenterParent'; $d.ShowInTaskbar = $false; $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
-    $h = New-Object System.Windows.Forms.Label; $h.Font = $fBold; $h.AutoSize = $false; $h.TextAlign = 'MiddleLeft'; $h.BackColor = [System.Drawing.Color]::Transparent
-    $h.Text = if ($multi) { "Ergebnis - $(@($results).Count) Aufgaben" } else { "Ergebnis - '$(@($results)[0].Name)'" }
-    [void](Add-To $d $h 20 12 800 28)
-
-    # Zusammenfassung
-    $sv = New-Object System.Windows.Forms.ListView
-    [void]$sv.Columns.Add('Zusammenfassung', 600); [void]$sv.Columns.Add('Anzahl', 180)
-    Set-ListBehavior $sv $false 26
-    $addRow = { param($a, $b, $col, $bold)
-        $i = New-Object System.Windows.Forms.ListViewItem($a); [void]$i.SubItems.Add($b); $i.ForeColor = $col
-        if ($bold) { $i.Font = $fBold }
-        [void]$sv.Items.Add($i)
+    $cell = '<GridViewColumn Width="{0}"><GridViewColumnHeader Tag="{1}">{1}</GridViewColumnHeader><GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{{Binding {1}}}" {2} TextTrimming="CharacterEllipsis" ToolTip="{{Binding {1}}}"/></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>'
+    $cols = $(if ($multi) { ($cell -f 130, 'Task', '').Replace('>Task<', '>Aufgabe<') } else { '' }) + ($cell -f 220, 'Aktion', '') + ($cell -f $(if ($multi) { 270 } else { 380 }), 'Datei', '') + ($cell -f 190, 'Status', 'Foreground="{Binding StatusBrush}"')
+    $dlg = New-Dlg 'DirToy - Ergebnis' 'Width="900" Height="680" MinWidth="620" MinHeight="460"' ('<DockPanel Margin="24">
+      <TextBlock x:Name="head" DockPanel.Dock="Top" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,12"/>
+      <DockPanel DockPanel.Dock="Bottom" Margin="0,16,0,0" LastChildFill="False"><Button x:Name="csv">Details als CSV öffnen</Button><Button x:Name="close" DockPanel.Dock="Right" Style="{StaticResource Primary}" IsCancel="True" IsDefault="True">Schließen</Button></DockPanel>
+      <Border DockPanel.Dock="Top" Background="{DynamicResource Surface}" CornerRadius="12" Padding="16,12" MaxHeight="230"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="sum"/></ScrollViewer></Border>
+      <TextBlock DockPanel.Dock="Top" Style="{StaticResource MutedText}" Margin="4,14,0,8" TextWrapping="Wrap" Text="Einzelne Aktionen (Fehler zuerst). Spaltenkopf anklicken zum Sortieren, Strg+C kopiert die markierten Zeilen."/>
+      <Border Background="{DynamicResource Surface}" CornerRadius="12" Padding="4"><ListView x:Name="dv" Background="Transparent" BorderThickness="0" FontSize="13" ScrollViewer.HorizontalScrollBarVisibility="Disabled"><ListView.View><GridView AllowsColumnReorder="False">' + $cols + '</GridView></ListView.View></ListView></Border></DockPanel>')
+    $dlg.head.Text = if ($multi) { "Ergebnis: $(@($results).Count) Aufgaben" } else { "Ergebnis: $(@($results)[0].Name)" }
+    $add = { param([string]$a, [string]$b, $brush, [bool]$bold)
+        $p = New-Object System.Windows.Controls.DockPanel; $p.Margin = '0,2'
+        $r = New-Object System.Windows.Controls.TextBlock; $r.Text = $b; $r.Foreground = $brush; [System.Windows.Controls.DockPanel]::SetDock($r, 'Right')
+        $l = New-Object System.Windows.Controls.TextBlock; $l.Text = $a; $l.Foreground = $brush; $l.TextWrapping = 'Wrap'
+        if ($bold) { $l.FontWeight = 'SemiBold' }
+        [void]$p.Children.Add($r); [void]$p.Children.Add($l); [void]$dlg.sum.Children.Add($p)
     }
-    $tot = [pscustomobject]@{ Err = 0; Cancel = $false }
     foreach ($r in $results) {
-        if ($multi) { & $addRow $r.Name '' $th.Text $true }
-        foreach ($k in $r.Sum.Keys) { & $addRow ('   ' + $k) ('{0:N0}' -f $r.Sum[$k]) $th.Text $false }
-        if ($r.Skipped -gt 0) { & $addRow '   Übersprungen' ('{0:N0}' -f $r.Skipped) $th.Muted $false }
-        if ($r.Errors -gt 0) { & $addRow '   Fehler' ('{0:N0}' -f $r.Errors) $th.Err $false; $tot.Err += $r.Errors }
+        if ($multi) { & $add $r.Name '' $script:br.Text $true }
+        foreach ($k in $r.Sum.Keys) { & $add $k ('{0:N0}' -f $r.Sum[$k]) $script:br.Text $false }
+        if ($r.Skipped -gt 0) { & $add 'Übersprungen' ('{0:N0}' -f $r.Skipped) $script:br.Muted $false }
+        if ($r.Errors -gt 0) { & $add 'Fehler' ('{0:N0}' -f $r.Errors) $script:br.Err $false }
         $ts = [timespan]::FromSeconds([math]::Round($r.Seconds))
-        & $addRow ('   Dauer ' + $ts.ToString('hh\:mm\:ss') + ', kopierte Datenmenge ' + (Format-Bytes $r.Bytes)) '' $th.Muted $false
-        if ($r.Cancelled) { & $addRow '   Der Lauf wurde abgebrochen (unvollständig, keine halben Dateien)' '' $th.Err $false; $tot.Cancel = $true }
+        & $add ('Dauer ' + $ts.ToString('hh\:mm\:ss') + ', kopierte Datenmenge ' + (Format-Bytes $r.Bytes)) '' $script:br.Muted $false
+        if ($r.Cancelled) { & $add 'Der Lauf wurde abgebrochen (unvollständig, keine halben Dateien)' '' $script:br.Err $false }
     }
-    [void](Add-To $d $sv 20 46 800 170); $sv.Anchor = $A_TLR
-
-    $l2 = New-Label $d 20 226 800 'Einzelne Aktionen (Fehler zuerst). Spaltenkopf anklicken zum Sortieren, Strg+C kopiert die markierten Zeilen.' $true
-    $l2.Anchor = $A_TLR
     # Details (Fehler zuerst, hoechstens 2000 Zeilen)
-    $dv = New-Object System.Windows.Forms.ListView
-    if ($multi) { [void]$dv.Columns.Add('Aufgabe', 140) }
-    [void]$dv.Columns.Add('Aktion', 210); [void]$dv.Columns.Add('Datei', 300); [void]$dv.Columns.Add('Status', 170)
-    Set-ListBehavior $dv $true 26
-    $max = 2000; $n = 0; $total = 0
+    $rows = [System.Collections.ObjectModel.ObservableCollection[DirToyRow]]::new()
+    $max = 2000; $total = 0
     foreach ($r in $results) { $total += $r.Items.Count }
-    $dv.BeginUpdate()
     foreach ($pass in 1, 2) {
         foreach ($r in $results) {
             foreach ($it in $r.Items) {
-                $isErr = ([string]$it[2] -like 'FEHLER*')
-                if (($pass -eq 1) -ne $isErr) { continue }
-                if ($n -ge $max) { break }
-                $cells = [string[]]$(if ($multi) { @($r.Name, $it[0], $it[1], $it[2]) } else { @($it[0], $it[1], $it[2]) })
-                $li = New-Object System.Windows.Forms.ListViewItem($cells[0])
-                for ($c = 1; $c -lt $cells.Count; $c++) { [void]$li.SubItems.Add($cells[$c]) }
-                $li.ForeColor = Get-StatusColor ([string]$it[2])
-                [void]$dv.Items.Add($li); $n++
+                if (($pass -eq 1) -ne ([string]$it[2] -like 'FEHLER*')) { continue }
+                if ($rows.Count -ge $max) { break }
+                $x = [DirToyRow]::new(); $x.Task = [string]$r.Name; $x.Aktion = [string]$it[0]; $x.Datei = [string]$it[1]; $x.Status = [string]$it[2]; $x.StatusBrush = Get-StatusBrush ([string]$it[2])
+                $rows.Add($x)
             }
         }
     }
-    $dv.EndUpdate()
-    if ($total -gt $n) {
-        $cells = [string[]]$(if ($multi) { @('', "... und $($total - $n) weitere Aktionen", '(komplette Liste: Button "Details als CSV öffnen")', '') } else { @("... und $($total - $n) weitere Aktionen", '(komplette Liste: Button "Details als CSV öffnen")', '') })
-        $li = New-Object System.Windows.Forms.ListViewItem($cells[0]); for ($c = 1; $c -lt $cells.Count; $c++) { [void]$li.SubItems.Add($cells[$c]) }
-        $li.ForeColor = $th.Muted; [void]$dv.Items.Add($li)
+    if ($total -gt $rows.Count) {
+        $x = [DirToyRow]::new(); $x.Aktion = "... und $($total - $rows.Count) weitere Aktionen"; $x.Datei = 'komplette Liste: „Details als CSV öffnen“'; $rows.Add($x)
     }
-    [void](Add-To $d $dv 20 250 800 300); $dv.Anchor = $A_ALL
-    $dv.Add_Resize({
-        $f = $this; $w = $f.ClientSize.Width; $last = $f.Columns.Count - 1
-        $others = 0; for ($i = 0; $i -lt $f.Columns.Count; $i++) { if ($i -ne $last - 1) { $others += $f.Columns[$i].Width } }
-        $nw = $w - $others; if ($nw -gt 150) { $f.Columns[$last - 1].Width = $nw }
+    $dlg.dv.ItemsSource = $rows
+    $script:resDlg = $dlg; $script:resList = $results; $script:resSort = ''; $script:resAsc = $true
+    $dlg.dv.AddHandler([System.Windows.Controls.GridViewColumnHeader]::ClickEvent, [System.Windows.RoutedEventHandler] {
+        param($s, $e)
+        $h = $e.OriginalSource
+        if ($h -isnot [System.Windows.Controls.GridViewColumnHeader] -or -not $h.Tag) { return }
+        $script:resAsc = if ($script:resSort -eq $h.Tag) { -not $script:resAsc } else { $true }
+        $script:resSort = [string]$h.Tag
+        $v = [System.Windows.Data.CollectionViewSource]::GetDefaultView($script:resDlg.dv.ItemsSource)
+        $v.SortDescriptions.Clear()
+        $v.SortDescriptions.Add((New-Object System.ComponentModel.SortDescription($script:resSort, $(if ($script:resAsc) { 'Ascending' } else { 'Descending' }))))
     })
-
-    $script:resList = $results
-    $b1 = New-Btn $d 20 566 210 38 'Details als CSV öffnen' $false $th.Surface; $b1.Anchor = $A_BL
-    $b2 = New-Btn $d 720 566 100 38 'Schließen' $true $null; $b2.Anchor = $A_BR
-    $b1.Add_Click({
+    $dlg.dv.Add_PreviewKeyDown({
+        param($s, $e)
+        if ($e.Key -eq 'C' -and [System.Windows.Input.Keyboard]::Modifiers -eq 'Control') { Copy-Rows $false $script:resDlg.dv; $e.Handled = $true }
+    })
+    $dlg.csv.Add_Click({
         $f = Write-ResultFile $script:resList
         if ($f) { try { Start-Process -FilePath $f -ErrorAction Stop } catch { Start-Process notepad.exe -ArgumentList "`"$f`"" } }
         else { [void](Show-Msg 'Die CSV-Datei konnte nicht geschrieben werden.' 'DirToy' 'OK' 'Warning') }
     })
-    $script:resClose = $b2
-    $b2.Add_Click({ $script:resClose.FindForm().Close() })
-    $d.CancelButton = $b2
-    $d.Add_HandleCreated({
-        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($script:resClose.FindForm().Handle, 20, [ref]$v, 4) } catch { }
-    })
-    [void]$d.ShowDialog($form)
-    $d.Dispose()
+    $dlg.close.Add_Click({ $script:resDlg.Win.Close() })
+    Show-Dlg $dlg
 }
 function Show-ResultsIfNeeded {
     if ($script:closeRequested -or -not [bool](Get-Setting 'ShowResult' $true)) { return }

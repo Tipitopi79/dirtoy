@@ -1,5 +1,5 @@
 ﻿# ---- Anleitung, wenn der Zeitplan nicht angelegt werden konnte (z. B. ohne Admin-Rechte)
-function Show-ManualSchedDialog($t, $s, [string]$err, $owner) {
+function Show-ManualSchedDialog($t, $s, [string]$err) {
     $cmd = Get-SchtasksCommand $t $s
     $name = 'DirToy - ' + (([string]$t.Name -replace '[\\/:*?"<>|]', '_').Trim())
     $psArgs = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$($script:scriptPath)`" -Task `"$($t.Id)`""
@@ -28,30 +28,20 @@ function Show-ManualSchedDialog($t, $s, [string]$err, $owner) {
         '  Button "Beim Anmelden starten": DirToy führt die Aufgabe dann bei jeder Windows-Anmeldung einmal aus (Autostart-Ordner).',
         '  Ein zeitlicher Plan oder ein Intervall ist damit nicht möglich.'
     ) -join "`r`n"
-    $f = New-Object System.Windows.Forms.Form
-    $f.Text = 'Zeitplan von Hand anlegen'; $f.ClientSize = New-Object System.Drawing.Size(640, 520); $f.StartPosition = 'CenterParent'
-    $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.ShowInTaskbar = $false
-    $f.BackColor = $th.Surface; $f.ForeColor = $th.Text; $f.Font = $fNormal
-    $tb = New-Object System.Windows.Forms.TextBox; $tb.Multiline = $true; $tb.ReadOnly = $true; $tb.ScrollBars = 'Vertical'; $tb.BorderStyle = 'FixedSingle'
-    $tb.BackColor = $th.Input; $tb.ForeColor = $th.Text; $tb.Font = $fNormal; $tb.Text = $txt
-    [void](Add-To $f $tb 16 14 608 396)
-    $tb.Select(0, 0)
-    $b1 = New-Btn $f 16 424 140 34 'Befehl kopieren' $true $null
-    $b2 = New-Btn $f 164 424 160 34 'Argumente kopieren' $false $th.Surface
-    $b3 = New-Btn $f 332 424 190 34 'Aufgabenplaner öffnen' $false $th.Surface
-    $b4 = New-Btn $f 530 424 94 34 'Schließen' $false $th.Surface
-    $b5 = New-Btn $f 16 468 250 34 'Beim Anmelden starten' $false $th.Surface
-    $script:mCmd = $cmd; $script:mArgs = $psArgs; $script:mTask = $t
-    $b1.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mCmd); [void](Show-Msg 'Der Befehl liegt in der Zwischenablage.' 'DirToy') } catch { } })
-    $b2.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mArgs); [void](Show-Msg 'Die Argumente liegen in der Zwischenablage.' 'DirToy') } catch { } })
-    $b3.Add_Click({ try { Start-Process 'taskschd.msc' } catch { [void](Show-Msg ('Der Aufgabenplaner ließ sich nicht öffnen (Windows-Taste, "Aufgabenplanung" tippen).') 'DirToy') } })
-    $b4.Add_Click({ $b4.FindForm().Close() })
-    $b5.Add_Click({
+    $dlg = New-Dlg 'Zeitplan von Hand anlegen' 'Width="720" Height="600" ResizeMode="NoResize"' '<DockPanel Margin="20">
+      <WrapPanel DockPanel.Dock="Bottom" Margin="0,16,0,0"><Button x:Name="b1" Style="{StaticResource Primary}" Margin="0,0,8,8">Befehl kopieren</Button><Button x:Name="b2" Margin="0,0,8,8">Argumente kopieren</Button><Button x:Name="b3" Margin="0,0,8,8">Aufgabenplaner öffnen</Button><Button x:Name="b5" Margin="0,0,8,8">Beim Anmelden starten</Button><Button x:Name="b4" IsCancel="True" Margin="0,0,0,8">Schließen</Button></WrapPanel>
+      <TextBox x:Name="tb" Style="{StaticResource Multi}"/></DockPanel>'
+    $dlg.tb.Text = $txt
+    $script:mCmd = $cmd; $script:mArgs = $psArgs; $script:mTask = $t; $script:mDlg = $dlg
+    $dlg.b1.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mCmd); [void](Show-Msg 'Der Befehl liegt in der Zwischenablage.' 'DirToy') } catch { } })
+    $dlg.b2.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mArgs); [void](Show-Msg 'Die Argumente liegen in der Zwischenablage.' 'DirToy') } catch { } })
+    $dlg.b3.Add_Click({ try { Start-Process 'taskschd.msc' } catch { [void](Show-Msg ('Der Aufgabenplaner ließ sich nicht öffnen (Windows-Taste, "Aufgabenplanung" tippen).') 'DirToy') } })
+    $dlg.b4.Add_Click({ $script:mDlg.Win.Close() })
+    $dlg.b5.Add_Click({
         $lnk = New-AutostartLink $script:mTask
         if ($lnk) { Save-Tasks; [void](Show-Msg "Eingerichtet. DirToy führt die Aufgabe ab jetzt bei jeder Windows-Anmeldung aus.`n`n$lnk" 'DirToy') }
         else { [void](Show-Msg 'Der Eintrag im Autostart-Ordner ließ sich nicht anlegen.' 'DirToy' 'OK' 'Warning') }
     })
-    $f.Add_HandleCreated({ try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($this.Handle, 20, [ref]$v, 4) } catch { } })
-    [void]$f.ShowDialog($owner)
-    $f.Dispose()
+    Show-Dlg $dlg
 }
+

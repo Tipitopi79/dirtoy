@@ -779,6 +779,26 @@ function Install-Update($info, [string]$target, [string]$sourceUrl) {
         Move-Item $neu $target -Force
     } finally { if (Test-Path $neu) { Remove-Item $neu -Force -ErrorAction SilentlyContinue } }
 }
+# Pruefung der Update-Signatur. Der Schluessel ($script:signingCert, Datei 16-signierschluessel.ps1) ist fest eingebaut;
+# der private Teil liegt nur beim Entwickler (siehe tools\neuer-schluessel.ps1), nicht bei GitHub.
+
+# Zeilenenden vereinheitlichen (CRLF -> LF), damit die Signatur unabhaengig von Git-Zeilenenden gilt.
+# Latin1 bildet jedes Byte 1:1 auf ein Zeichen ab, es geht also nichts verloren.
+function Convert-ForSignature([byte[]]$bytes) {
+    $enc = [System.Text.Encoding]::GetEncoding(28591)
+    return ,$enc.GetBytes($enc.GetString($bytes).Replace("`r`n", "`n"))
+}
+
+# $true nur, wenn $sigB64 (Base64, RSA-SHA256/PKCS1) eine gueltige Signatur von $data mit dem eingebauten Schluessel ist.
+function Test-UpdateSignature([byte[]]$data, [string]$sigB64) {
+    if (-not $script:signingCert) { throw 'Es ist kein Signaturschluessel eingebaut, Updates koennen nicht geprueft werden.' }
+    try { $sig = [Convert]::FromBase64String(([string]$sigB64).Trim()) } catch { return $false }
+    $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (,[Convert]::FromBase64String($script:signingCert))
+    $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPublicKey($cert)
+    try {
+        return [bool]$rsa.VerifyData((Convert-ForSignature $data), $sig, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    } catch { return $false } finally { $rsa.Dispose() }
+}
 if ($NoGui) { return }
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 # Kern-Funktionen merken (Name und Text): der Sync-Thread bekommt genau diese, nicht die Datei auf der Platte
@@ -811,296 +831,7 @@ if ($isDark) {
         Ok = (C '#0F7B0F'); Err = (C '#C42B1C') }
 }
 $th = $script:th
-function Get-StatusColor([string]$st) {
-    if (-not $script:th) { return $null }
-    if ($st -like 'FEHLER*') { return $script:th.Err }
-    if ($st -eq 'OK') { return $script:th.Ok }
-    if ($st -eq 'geplant' -or $st -like 'übersprungen*' -or $st -like 'abgebrochen*') { return $script:th.Muted }
-    return $script:th.Text
-}
-
-$fNormal = New-Object System.Drawing.Font('Segoe UI', 10)
-$fSmall  = New-Object System.Drawing.Font('Segoe UI', 9)
-$fBold   = New-Object System.Drawing.Font('Segoe UI Semibold', 10)
-$fTitle  = New-Object System.Drawing.Font('Segoe UI Semibold', 18)
-
-$AN = [System.Windows.Forms.AnchorStyles]
-$A_TL = $AN::Top -bor $AN::Left; $A_TLR = $A_TL -bor $AN::Right; $A_TR = $AN::Top -bor $AN::Right
-$A_TLB = $A_TL -bor $AN::Bottom; $A_BL = $AN::Bottom -bor $AN::Left; $A_BR = $AN::Bottom -bor $AN::Right; $A_BLR = $A_BL -bor $AN::Right; $A_ALL = $A_TLR -bor $AN::Bottom
-
-function Add-To($parent, $c, $x, $y, $w, $h) {
-    $c.Location = New-Object System.Drawing.Point($x, $y)
-    if ($w -gt 0) { $c.Size = New-Object System.Drawing.Size($w, $h) }
-    $parent.Controls.Add($c); return $c
-}
-function New-Label($parent, $x, $y, $w, $text, $muted) {
-    $l = New-Object System.Windows.Forms.Label; $l.Text = $text; $l.AutoSize = $false; $l.Height = 20
-    $l.BackColor = [System.Drawing.Color]::Transparent
-    $l.Font = if ($muted) { $fSmall } else { $fNormal }
-    $l.ForeColor = if ($muted) { $th.Muted } else { $th.Text }
-    Add-To $parent $l $x $y $w 20
-}
-function New-Input($parent, $x, $y, $w) {
-    $t = New-Object System.Windows.Forms.TextBox; $t.BorderStyle = 'FixedSingle'
-    $t.BackColor = $th.Input; $t.ForeColor = $th.Text; $t.Font = $fNormal
-    Add-To $parent $t $x $y $w 28
-}
-function New-Btn($parent, $x, $y, $w, $h, $text, [bool]$primary, $fill) {
-    $b = New-Object System.Windows.Forms.Button; $b.Text = $text; $b.FlatStyle = 'Flat'; $b.Cursor = 'Hand'
-    $b.UseVisualStyleBackColor = $false; $b.Font = $fBold
-    if ($primary) {
-        $b.BackColor = $th.Accent; $b.ForeColor = $th.AccentText
-        $b.FlatAppearance.BorderSize = 0; $b.FlatAppearance.MouseOverBackColor = $th.AccentHover; $b.FlatAppearance.MouseDownBackColor = $th.AccentHover
-    } else {
-        $b.BackColor = $fill; $b.ForeColor = $th.Text
-        $b.FlatAppearance.BorderSize = 1; $b.FlatAppearance.BorderColor = $th.Border
-        $b.FlatAppearance.MouseOverBackColor = $th.SelBg; $b.FlatAppearance.MouseDownBackColor = $th.SelBg
-    }
-    Add-To $parent $b $x $y $w $h
-}
-function New-Card($parent, $x, $y, $w, $h) {
-    $p = New-Object System.Windows.Forms.Panel; $p.BackColor = $th.Surface
-    Add-To $parent $p $x $y $w $h
-}
-
-# ---- Meldungen im DirToy-Look (wie MessageBox): OK oder YesNo, Rueckgabe 'OK', 'Yes' oder 'No'. Esc/Schliessen = Nein
-function Show-Msg([string]$text, [string]$title = 'DirToy', [string]$buttons = 'OK', [string]$icon = 'Information', [string]$default = 'Button1') {
-    $d = New-Object System.Windows.Forms.Form
-    $d.Text = $title; $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false; $d.ShowInTaskbar = $false
-    $d.StartPosition = 'CenterParent'; $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
-    $sz = [System.Windows.Forms.TextRenderer]::MeasureText($text, $fNormal, (New-Object System.Drawing.Size(400, 0)), 'WordBreak, NoPrefix')
-    $h = [math]::Max(48, $sz.Height + 8)
-    $d.ClientSize = New-Object System.Drawing.Size(520, ($h + 112))
-    $g = New-Object System.Windows.Forms.Label; $g.BackColor = [System.Drawing.Color]::Transparent; $g.UseMnemonic = $false
-    $g.Font = New-Object System.Drawing.Font('Segoe MDL2 Assets', 26)
-    switch ($icon) {
-        'Warning'  { $g.Text = [string][char]0xE7BA; $g.ForeColor = $(if ($isDark) { C '#FFB900' } else { C '#9D5D00' }) }
-        'Error'    { $g.Text = [string][char]0xEA39; $g.ForeColor = $th.Err }
-        'Question' { $g.Text = [string][char]0xE897; $g.ForeColor = $th.Accent }
-        default    { $g.Text = [string][char]0xE946; $g.ForeColor = $th.Accent }
-    }
-    [void](Add-To $d $g 20 24 64 48)
-    $l = New-Label $d 92 24 408 $text $false; $l.UseMnemonic = $false; $l.Size = New-Object System.Drawing.Size(408, $h)
-    $y = $h + 52
-    if ($buttons -eq 'YesNo') {
-        $no2 = ($default -eq 'Button2')
-        $bn = New-Btn $d 384 $y 112 38 'Nein' $no2 $th.Surface; $bn.DialogResult = 'No'
-        $by = New-Btn $d 260 $y 112 38 'Ja' (-not $no2) $th.Surface; $by.DialogResult = 'Yes'
-        $by.TabIndex = 1; $bn.TabIndex = 2
-        $def = if ($no2) { $bn } else { $by }; $d.CancelButton = $bn
-    } else {
-        $def = New-Btn $d 384 $y 112 38 'OK' $true $null; $def.DialogResult = 'OK'; $d.CancelButton = $def
-    }
-    $d.AcceptButton = $def; $d.ActiveControl = $def
-    $d.Add_HandleCreated({ try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($this.Handle, 20, [ref]$v, 4) } catch { } })
-    $owner = [System.Windows.Forms.Form]::ActiveForm; if (-not $owner) { $owner = $form }
-    if ($icon -eq 'Warning' -or $icon -eq 'Error') { [System.Media.SystemSounds]::Exclamation.Play() }
-    try { $r = [string]$d.ShowDialog($owner) } finally { $d.Dispose() }
-    if ($buttons -ne 'YesNo') { return 'OK' }
-    if ($r -eq 'Yes') { return 'Yes' }
-    return 'No'
-}
-
-# ---- Listen: Sortieren per Klick auf die Spaltenkoepfe, Markieren und Kopieren (Strg+C, Rechtsklick)
-if (-not ('DirToyLvSorter' -as [type])) {
-    Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
-using System;
-using System.Collections;
-using System.Windows.Forms;
-public class DirToyLvSorter : IComparer {
-    public int Col; public bool Asc;
-    public int Compare(object a, object b) {
-        string x = ((ListViewItem)a).SubItems[Col].Text, y = ((ListViewItem)b).SubItems[Col].Text;
-        int r = string.Compare(x, y, StringComparison.CurrentCultureIgnoreCase);
-        return Asc ? r : -r;
-    }
-}
-'@
-}
-function Copy-ListRows($lv, [bool]$all) {
-    $items = if ($all) { @($lv.Items) } else { @($lv.SelectedItems) }
-    if ($items.Count -eq 0) { return }
-    $sb = New-Object System.Text.StringBuilder
-    foreach ($it in $items) { [void]$sb.AppendLine((@($it.SubItems | ForEach-Object { $_.Text }) -join "`t")) }
-    try { [System.Windows.Forms.Clipboard]::SetText($sb.ToString()) } catch { }
-}
-function Select-AllRows($lv) { $lv.BeginUpdate(); try { foreach ($i in $lv.Items) { $i.Selected = $true } } finally { $lv.EndUpdate() } }
-function Set-ListBehavior($lv, [bool]$sortable, [int]$rowH) {
-    $lv.View = 'Details'; $lv.FullRowSelect = $true; $lv.BorderStyle = 'None'; $lv.OwnerDraw = $true; $lv.Font = $fSmall
-    $lv.BackColor = $th.Surface; $lv.ForeColor = $th.Text
-    $lv.HeaderStyle = $(if ($sortable) { 'Clickable' } else { 'Nonclickable' })
-    $il = New-Object System.Windows.Forms.ImageList; $il.ImageSize = New-Object System.Drawing.Size(1, $rowH); $lv.SmallImageList = $il
-    $lv.Tag = @{ Col = -1; Asc = $true }
-    $lv.Add_DrawColumnHeader({
-        param($s, $e)
-        $br = New-Object System.Drawing.SolidBrush($script:th.Surface); $e.Graphics.FillRectangle($br, $e.Bounds); $br.Dispose()
-        $pen = New-Object System.Drawing.Pen($script:th.Border)
-        $e.Graphics.DrawLine($pen, $e.Bounds.Left, $e.Bounds.Bottom - 1, $e.Bounds.Right, $e.Bounds.Bottom - 1); $pen.Dispose()
-        $r = New-Object System.Drawing.Rectangle(($e.Bounds.X + 12), $e.Bounds.Y, ($e.Bounds.Width - 14), $e.Bounds.Height)
-        $fl = [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::Left
-        $txt = $e.Header.Text.ToUpper()
-        $st = $s.Tag
-        if ($st -and $st.Col -eq $e.ColumnIndex) { $txt += $(if ($st.Asc) { ' ' + [char]0x25B2 } else { ' ' + [char]0x25BC }) }
-        [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $txt, $s.Font, $r, $script:th.Muted, $fl)
-    })
-    $lv.Add_DrawItem({ param($s, $e) })
-    $lv.Add_DrawSubItem({
-        param($s, $e)
-        $bg = if ($e.Item.Selected) { $script:th.SelBg } else { $script:th.Surface }
-        $br = New-Object System.Drawing.SolidBrush($bg); $e.Graphics.FillRectangle($br, $e.Bounds); $br.Dispose()
-        $r = New-Object System.Drawing.Rectangle(($e.Bounds.X + 12), $e.Bounds.Y, ($e.Bounds.Width - 14), $e.Bounds.Height)
-        $col = if ($e.ColumnIndex -eq ($s.Columns.Count - 1)) { $e.Item.ForeColor } else { $script:th.Text }
-        $fl = [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::EndEllipsis -bor [System.Windows.Forms.TextFormatFlags]::Left -bor [System.Windows.Forms.TextFormatFlags]::NoPrefix
-        [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.SubItem.Text, $s.Font, $r, $col, $fl)
-    })
-    if ($sortable) {
-        $lv.Add_ColumnClick({
-            param($s, $e)
-            if ($script:busy) { return }
-            $st = $s.Tag
-            if ($st.Col -eq $e.Column) { $st.Asc = -not $st.Asc } else { $st.Col = $e.Column; $st.Asc = $true }
-            $so = New-Object DirToyLvSorter; $so.Col = $e.Column; $so.Asc = $st.Asc
-            $s.ListViewItemSorter = $so
-            $s.Invalidate()
-        })
-    }
-    $lv.Add_KeyDown({
-        param($s, $e)
-        if ($e.Control -and $e.KeyCode -eq 'C') { Copy-ListRows $s $false; $e.SuppressKeyPress = $true }
-        elseif ($e.Control -and $e.KeyCode -eq 'A') { Select-AllRows $s; $e.SuppressKeyPress = $true }
-    })
-    $cm = New-Object System.Windows.Forms.ContextMenuStrip
-    $m1 = $cm.Items.Add('Markierte Zeilen kopieren (Strg+C)'); $m2 = $cm.Items.Add('Alle Zeilen kopieren'); $m3 = $cm.Items.Add('Alles markieren (Strg+A)')
-    $m1.Add_Click({ Copy-ListRows $this.Owner.SourceControl $false })
-    $m2.Add_Click({ Copy-ListRows $this.Owner.SourceControl $true })
-    $m3.Add_Click({ Select-AllRows $this.Owner.SourceControl })
-    $lv.ContextMenuStrip = $cm
-}
-
-# ---- Ergebnis-Fenster nach einem Lauf (Zusammenfassung wie bei SyncToy, Details sortier- und kopierbar)
-function Format-Bytes([long]$b) {
-    if ($b -ge 1GB) { return ('{0:N1} GB' -f ($b / 1GB)) }
-    if ($b -ge 1MB) { return ('{0:N1} MB' -f ($b / 1MB)) }
-    if ($b -ge 1KB) { return ('{0:N0} KB' -f ($b / 1KB)) }
-    return "$b Bytes"
-}
-function Write-ResultFile($results) {
-    try {
-        $path = Join-Path $script:dataDir 'ergebnis.csv'
-        $sw = New-Object System.IO.StreamWriter($path, $false, (New-Object System.Text.UTF8Encoding($true)))
-        try {
-            $sw.WriteLine('Aufgabe;Aktion;Ordner;Datei;Relativer Pfad;Status')
-            foreach ($r in $results) {
-                foreach ($it in $r.Items) {
-                    $rel = [string]$it[1]; $isDir = $rel.EndsWith('\')
-                    $x = $rel.TrimEnd('\'); $i = $x.LastIndexOf('\')
-                    $dir = if ($i -ge 0) { $x.Substring(0, $i) } else { '' }
-                    $name = if ($isDir) { '' } elseif ($i -ge 0) { $x.Substring($i + 1) } else { $x }
-                    if ($isDir) { $dir = $x }
-                    $cells = foreach ($c in @($r.Name, $it[0], $dir, $name, $rel, $it[2])) {
-                        $c = [string]$c
-                        if ($c.Length -gt 0 -and '=+-@'.Contains($c[0])) { $c = "'" + $c }
-                        '"' + $c.Replace('"', '""') + '"'
-                    }
-                    $sw.WriteLine($cells -join ';')
-                }
-            }
-        } finally { $sw.Dispose() }
-        return $path
-    } catch { return $null }
-}
-function Show-ResultDialog($results) {
-    $multi = (@($results).Count -gt 1)
-    $d = New-Object System.Windows.Forms.Form
-    $d.Text = 'DirToy - Ergebnis'; $d.ClientSize = New-Object System.Drawing.Size(840, 620); $d.MinimumSize = New-Object System.Drawing.Size(620, 460)
-    $d.StartPosition = 'CenterParent'; $d.ShowInTaskbar = $false; $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
-    $h = New-Object System.Windows.Forms.Label; $h.Font = $fBold; $h.AutoSize = $false; $h.TextAlign = 'MiddleLeft'; $h.BackColor = [System.Drawing.Color]::Transparent
-    $h.Text = if ($multi) { "Ergebnis - $(@($results).Count) Aufgaben" } else { "Ergebnis - '$(@($results)[0].Name)'" }
-    [void](Add-To $d $h 20 12 800 28)
-
-    # Zusammenfassung
-    $sv = New-Object System.Windows.Forms.ListView
-    [void]$sv.Columns.Add('Zusammenfassung', 600); [void]$sv.Columns.Add('Anzahl', 180)
-    Set-ListBehavior $sv $false 26
-    $addRow = { param($a, $b, $col, $bold)
-        $i = New-Object System.Windows.Forms.ListViewItem($a); [void]$i.SubItems.Add($b); $i.ForeColor = $col
-        if ($bold) { $i.Font = $fBold }
-        [void]$sv.Items.Add($i)
-    }
-    $tot = [pscustomobject]@{ Err = 0; Cancel = $false }
-    foreach ($r in $results) {
-        if ($multi) { & $addRow $r.Name '' $th.Text $true }
-        foreach ($k in $r.Sum.Keys) { & $addRow ('   ' + $k) ('{0:N0}' -f $r.Sum[$k]) $th.Text $false }
-        if ($r.Skipped -gt 0) { & $addRow '   Übersprungen' ('{0:N0}' -f $r.Skipped) $th.Muted $false }
-        if ($r.Errors -gt 0) { & $addRow '   Fehler' ('{0:N0}' -f $r.Errors) $th.Err $false; $tot.Err += $r.Errors }
-        $ts = [timespan]::FromSeconds([math]::Round($r.Seconds))
-        & $addRow ('   Dauer ' + $ts.ToString('hh\:mm\:ss') + ', kopierte Datenmenge ' + (Format-Bytes $r.Bytes)) '' $th.Muted $false
-        if ($r.Cancelled) { & $addRow '   Der Lauf wurde abgebrochen (unvollständig, keine halben Dateien)' '' $th.Err $false; $tot.Cancel = $true }
-    }
-    [void](Add-To $d $sv 20 46 800 170); $sv.Anchor = $A_TLR
-
-    $l2 = New-Label $d 20 226 800 'Einzelne Aktionen (Fehler zuerst). Spaltenkopf anklicken zum Sortieren, Strg+C kopiert die markierten Zeilen.' $true
-    $l2.Anchor = $A_TLR
-    # Details (Fehler zuerst, hoechstens 2000 Zeilen)
-    $dv = New-Object System.Windows.Forms.ListView
-    if ($multi) { [void]$dv.Columns.Add('Aufgabe', 140) }
-    [void]$dv.Columns.Add('Aktion', 210); [void]$dv.Columns.Add('Datei', 300); [void]$dv.Columns.Add('Status', 170)
-    Set-ListBehavior $dv $true 26
-    $max = 2000; $n = 0; $total = 0
-    foreach ($r in $results) { $total += $r.Items.Count }
-    $dv.BeginUpdate()
-    foreach ($pass in 1, 2) {
-        foreach ($r in $results) {
-            foreach ($it in $r.Items) {
-                $isErr = ([string]$it[2] -like 'FEHLER*')
-                if (($pass -eq 1) -ne $isErr) { continue }
-                if ($n -ge $max) { break }
-                $cells = [string[]]$(if ($multi) { @($r.Name, $it[0], $it[1], $it[2]) } else { @($it[0], $it[1], $it[2]) })
-                $li = New-Object System.Windows.Forms.ListViewItem($cells[0])
-                for ($c = 1; $c -lt $cells.Count; $c++) { [void]$li.SubItems.Add($cells[$c]) }
-                $li.ForeColor = Get-StatusColor ([string]$it[2])
-                [void]$dv.Items.Add($li); $n++
-            }
-        }
-    }
-    $dv.EndUpdate()
-    if ($total -gt $n) {
-        $cells = [string[]]$(if ($multi) { @('', "... und $($total - $n) weitere Aktionen", '(komplette Liste: Button "Details als CSV öffnen")', '') } else { @("... und $($total - $n) weitere Aktionen", '(komplette Liste: Button "Details als CSV öffnen")', '') })
-        $li = New-Object System.Windows.Forms.ListViewItem($cells[0]); for ($c = 1; $c -lt $cells.Count; $c++) { [void]$li.SubItems.Add($cells[$c]) }
-        $li.ForeColor = $th.Muted; [void]$dv.Items.Add($li)
-    }
-    [void](Add-To $d $dv 20 250 800 300); $dv.Anchor = $A_ALL
-    $dv.Add_Resize({
-        $f = $this; $w = $f.ClientSize.Width; $last = $f.Columns.Count - 1
-        $others = 0; for ($i = 0; $i -lt $f.Columns.Count; $i++) { if ($i -ne $last - 1) { $others += $f.Columns[$i].Width } }
-        $nw = $w - $others; if ($nw -gt 150) { $f.Columns[$last - 1].Width = $nw }
-    })
-
-    $script:resList = $results
-    $b1 = New-Btn $d 20 566 210 38 'Details als CSV öffnen' $false $th.Surface; $b1.Anchor = $A_BL
-    $b2 = New-Btn $d 720 566 100 38 'Schließen' $true $null; $b2.Anchor = $A_BR
-    $b1.Add_Click({
-        $f = Write-ResultFile $script:resList
-        if ($f) { try { Start-Process -FilePath $f -ErrorAction Stop } catch { Start-Process notepad.exe -ArgumentList "`"$f`"" } }
-        else { [void](Show-Msg 'Die CSV-Datei konnte nicht geschrieben werden.' 'DirToy' 'OK' 'Warning') }
-    })
-    $script:resClose = $b2
-    $b2.Add_Click({ $script:resClose.FindForm().Close() })
-    $d.CancelButton = $b2
-    $d.Add_HandleCreated({
-        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($script:resClose.FindForm().Handle, 20, [ref]$v, 4) } catch { }
-    })
-    [void]$d.ShowDialog($form)
-    $d.Dispose()
-}
-function Show-ResultsIfNeeded {
-    if ($script:closeRequested -or -not [bool](Get-Setting 'ShowResult' $true)) { return }
-    $list = @($script:results | Where-Object { ($_.Copied + $_.Deleted + $_.Errors + $_.Skipped) -gt 0 -or $_.Cancelled })
-    if ($list.Count -eq 0) { return }
-    Show-ResultDialog $list
-}
-
-# ---- Hauptfenster (WPF)
+# ---- Klassen, Stile und Dialog-Grundlage (WPF)
 if (-not ('DirToyRow' -as [type])) {
     Add-Type -ReferencedAssemblies PresentationCore, PresentationFramework, WindowsBase, System.Xaml, System.Windows.Forms -TypeDefinition @'
 using System;
@@ -1113,7 +844,7 @@ public class DirToyItem : INotifyPropertyChanged {
 public class DirToyRow : DirToyItem {
     string st; Brush br;
     public string Icon { get; set; } public Brush IconBrush { get; set; }
-    public string Aktion { get; set; } public string Datei { get; set; } public string File { get; set; }
+    public string Aktion { get; set; } public string Datei { get; set; } public string Task { get; set; } public string File { get; set; }
     public string Status { get { return st; } set { st = value; Raise("Status"); } }
     public Brush StatusBrush { get { return br; } set { br = value; Raise("StatusBrush"); } }
 }
@@ -1125,18 +856,20 @@ public class DirToyTask : DirToyItem {
     public Brush Dot { get { return d; } set { d = value; Raise("Dot"); } }
     public override string ToString() { return n; }
 }
+public class DirToyNode : DirToyItem {
+    bool c; Brush b;
+    public DirToyNode() { Nodes = new System.Collections.ObjectModel.ObservableCollection<DirToyNode>(); }
+    public string Text { get; set; } public string Path { get; set; } public string Kind { get; set; } public string Root { get; set; } public bool Loaded { get; set; }
+    public System.Collections.ObjectModel.ObservableCollection<DirToyNode> Nodes { get; set; }
+    public bool Checked { get { return c; } set { c = value; Raise("Checked"); } }
+    public Brush Brush { get { return b; } set { b = value; Raise("Brush"); } }
+}
 public class DirToyOwner : System.Windows.Forms.IWin32Window {
     public IntPtr H; public IntPtr Handle { get { return H; } }
 }
 '@
 }
-$script:xaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:sys="clr-namespace:System;assembly=mscorlib"
-        Width="1120" Height="780" MinWidth="900" MinHeight="660" WindowStartupLocation="CenterScreen"
-        FontFamily="Segoe UI" FontSize="14" Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}"
-        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
-  <Window.TaskbarItemInfo><TaskbarItemInfo x:Name="task"/></Window.TaskbarItemInfo>
-  <Window.Resources>
+$script:styles = @'
     <sys:Double x:Key="{x:Static SystemParameters.VerticalScrollBarButtonHeightKey}">72</sys:Double>
     <Style x:Key="Icon" TargetType="TextBlock">
       <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/><Setter Property="VerticalAlignment" Value="Center"/><Setter Property="FontSize" Value="15"/><Setter Property="TextOptions.TextRenderingMode" Value="Grayscale"/>
@@ -1172,7 +905,7 @@ $script:xaml = @'
     <Style TargetType="TextBox">
       <Setter Property="Background" Value="{DynamicResource Input}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="CaretBrush" Value="{DynamicResource Text}"/>
       <Setter Property="BorderBrush" Value="{DynamicResource Border}"/><Setter Property="Height" Value="34"/><Setter Property="SelectionBrush" Value="{DynamicResource Accent}"/>
-      <Setter Property="VerticalContentAlignment" Value="Center"/><Setter Property="Padding" Value="8,0"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/><Setter Property="Padding" Value="4,0"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox">
         <Border x:Name="b" CornerRadius="8" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
           <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" VerticalAlignment="Center"/></Border>
@@ -1235,6 +968,219 @@ $script:xaml = @'
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="GridViewColumnHeader">
         <Border Background="Transparent" Padding="12,7"><ContentPresenter/></Border></ControlTemplate></Setter.Value></Setter>
     </Style>
+    <Style TargetType="CheckBox">
+      <Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Cursor" Value="Hand"/><Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="CheckBox">
+        <StackPanel Orientation="Horizontal" Background="Transparent">
+          <Border x:Name="b" Width="18" Height="18" CornerRadius="4" BorderThickness="1.5" BorderBrush="{DynamicResource Muted}" Background="{DynamicResource Input}" VerticalAlignment="Center"><TextBlock x:Name="t" Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="{DynamicResource AccentText}" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Hidden"/></Border>
+          <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center"/></StackPanel>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsChecked" Value="True"><Setter TargetName="t" Property="Visibility" Value="Visible"/><Setter TargetName="b" Property="Background" Value="{DynamicResource Accent}"/><Setter TargetName="b" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+          <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style x:Key="Chip" TargetType="CheckBox">
+      <Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="CheckBox">
+        <Border x:Name="b" CornerRadius="8" Width="50" Height="34" Margin="0,0,8,0" Background="{DynamicResource Input}" BorderBrush="{DynamicResource Border}" BorderThickness="1"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+        <ControlTemplate.Triggers><Trigger Property="IsChecked" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource Accent}"/><Setter Property="Foreground" Value="{DynamicResource AccentText}"/></Trigger></ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="RadioButton">
+      <Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
+        <StackPanel Orientation="Horizontal" Background="Transparent"><Grid Width="18" Height="18"><Ellipse x:Name="o" Stroke="{DynamicResource Muted}" StrokeThickness="1.5" Fill="{DynamicResource Input}"/><Ellipse x:Name="i" Width="8" Height="8" Fill="{DynamicResource Accent}" Visibility="Hidden"/></Grid><ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center"/></StackPanel>
+        <ControlTemplate.Triggers><Trigger Property="IsChecked" Value="True"><Setter TargetName="i" Property="Visibility" Value="Visible"/><Setter TargetName="o" Property="Stroke" Value="{DynamicResource Accent}"/></Trigger></ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style x:Key="Multi" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+      <Setter Property="Height" Value="Auto"/><Setter Property="VerticalContentAlignment" Value="Top"/><Setter Property="Padding" Value="8"/><Setter Property="IsReadOnly" Value="True"/><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox"><Border CornerRadius="8" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1"><ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/></Border></ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="TreeViewItem">
+      <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TreeViewItem">
+        <StackPanel><StackPanel Orientation="Horizontal" Margin="0,3">
+          <ToggleButton x:Name="e" IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" ClickMode="Press" Width="22" Focusable="False"><ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border Background="Transparent"><TextBlock x:Name="t" Text="&#xE76C;" FontFamily="Segoe MDL2 Assets" FontSize="10" Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsChecked" Value="True"><Setter TargetName="t" Property="Text" Value="&#xE70D;"/></Trigger></ControlTemplate.Triggers></ControlTemplate></ToggleButton.Template></ToggleButton>
+          <ContentPresenter ContentSource="Header"/></StackPanel>
+          <ItemsPresenter x:Name="c" Margin="20,0,0,0" Visibility="Collapsed"/></StackPanel>
+        <ControlTemplate.Triggers><Trigger Property="IsExpanded" Value="True"><Setter TargetName="c" Property="Visibility" Value="Visible"/></Trigger><Trigger Property="HasItems" Value="False"><Setter TargetName="e" Property="Visibility" Value="Hidden"/></Trigger></ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+'@
+try {
+    Add-Type -Namespace Win32 -Name Dwm -MemberDefinition '[System.Runtime.InteropServices.DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(System.IntPtr hwnd, int attr, ref int val, int size);'
+} catch { }
+# Farben des Designs
+$script:br = @{}
+foreach ($k in $th.Keys) { $c = $th[$k]; $script:br[$k] = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromRgb($c.R, $c.G, $c.B)) }
+$script:br['Hover'] = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromArgb(14, $th.Text.R, $th.Text.G, $th.Text.B))
+$script:br['Warn'] = [System.Windows.Media.SolidColorBrush]::new($(if ($isDark) { [System.Windows.Media.Color]::FromRgb(0xFF, 0xB9, 0x00) } else { [System.Windows.Media.Color]::FromRgb(0x9D, 0x5D, 0x00) }))
+foreach ($b in $script:br.Values) { $b.Freeze() }
+function Set-Brushes($w) { foreach ($k in $script:br.Keys) { $w.Resources[$k] = $script:br[$k] } }
+function Set-DarkTitle($w) {
+    $w.Add_SourceInitialized({
+        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute((New-Object System.Windows.Interop.WindowInteropHelper $this).Handle, 20, [ref]$v, 4) } catch { }
+    })
+}
+$script:winStack = New-Object System.Collections.ArrayList   # offene Dialoge, der oberste ist Besitzer des naechsten
+# Baut einen Dialog; Rueckgabe: Tabelle mit Win und allen benannten Elementen. $size: z. B. 'Width="520" SizeToContent="Height" ResizeMode="NoResize"'
+function New-Dlg([string]$title, [string]$size, [string]$body) {
+    $x = '<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:sys="clr-namespace:System;assembly=mscorlib" ' + $size +
+        ' ShowInTaskbar="False" FontFamily="Segoe UI" FontSize="14" Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}" UseLayoutRounding="True" TextOptions.TextFormattingMode="Display"><Window.Resources>' + $script:styles + '</Window.Resources>' + $body + '</Window>'
+    $w = [System.Windows.Markup.XamlReader]::Parse($x)
+    $w.Title = $title
+    if ($script:win.Icon) { $w.Icon = $script:win.Icon }
+    Set-Brushes $w; Set-DarkTitle $w
+    $r = @{ Win = $w; Result = '' }
+    foreach ($m in [regex]::Matches($body, 'x:Name="(\w+)"')) { $n = $m.Groups[1].Value; $e = $w.FindName($n); if ($e) { $r[$n] = $e } }
+    return $r
+}
+function Show-Dlg($dlg) {
+    $o = if ($script:winStack.Count) { $script:winStack[$script:winStack.Count - 1] } else { $script:win }
+    if ($o -and $o.IsVisible) { $dlg.Win.Owner = $o; $dlg.Win.WindowStartupLocation = 'CenterOwner' } else { $dlg.Win.WindowStartupLocation = 'CenterScreen' }
+    [void]$script:winStack.Add($dlg.Win)
+    try { [void]$dlg.Win.ShowDialog() } finally { $script:winStack.Remove($dlg.Win) }
+}
+# ---- Meldungen (wie MessageBox): OK oder YesNo, Rueckgabe 'OK', 'Yes' oder 'No'. Esc/Schliessen = Nein
+function Show-Msg([string]$text, [string]$title = 'DirToy', [string]$buttons = 'OK', [string]$icon = 'Information', [string]$default = 'Button1') {
+    $yn = ($buttons -eq 'YesNo'); $no2 = ($yn -and $default -eq 'Button2')
+    $btns = if ($yn) {
+        '<Button x:Name="yes" Width="116" Margin="0,0,8,0" ' + $(if ($no2) { '' } else { 'IsDefault="True" Style="{StaticResource Primary}"' }) + '>Ja</Button><Button x:Name="no" Width="116" IsCancel="True" ' + $(if ($no2) { 'IsDefault="True" Style="{StaticResource Primary}"' } else { '' }) + '>Nein</Button>'
+    } else { '<Button x:Name="no" Width="116" IsCancel="True" IsDefault="True" Style="{StaticResource Primary}">OK</Button>' }
+    $g = switch ($icon) { 'Warning' { @('E7BA', 'Warn') } 'Error' { @('EA39', 'Err') } 'Question' { @('E897', 'Accent') } default { @('E946', 'Accent') } }
+    $dlg = New-Dlg $title 'Width="540" SizeToContent="Height" MaxHeight="640" ResizeMode="NoResize"' ('<DockPanel Margin="24"><StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,24,0,0">' + $btns + '</StackPanel>' +
+        '<TextBlock DockPanel.Dock="Left" Text="&#x' + $g[0] + ';" Style="{StaticResource Icon}" FontSize="36" Foreground="{DynamicResource ' + $g[1] + '}" VerticalAlignment="Top" Margin="0,2,20,0"/>' +
+        '<ScrollViewer VerticalScrollBarVisibility="Auto"><TextBlock x:Name="msgText" TextWrapping="Wrap" LineHeight="21"/></ScrollViewer></DockPanel>')
+    $dlg.msgText.Text = $text
+    $script:msgDlg = $dlg
+    if ($yn) { $dlg.yes.Add_Click({ $script:msgDlg.Result = 'Yes'; $script:msgDlg.Win.Close() }) }
+    $dlg.no.Add_Click({ $script:msgDlg.Win.Close() })
+    [void]$(if ($yn -and -not $no2) { $dlg.yes } else { $dlg.no }).Focus()
+    if ($icon -eq 'Warning' -or $icon -eq 'Error') { [System.Media.SystemSounds]::Exclamation.Play() }
+    Show-Dlg $dlg
+    if (-not $yn) { return 'OK' }
+    if ($dlg.Result -eq 'Yes') { return 'Yes' }
+    return 'No'
+}
+
+# ---- Ergebnis-Fenster nach einem Lauf (Zusammenfassung wie bei SyncToy, Details sortier- und kopierbar)
+function Format-Bytes([long]$b) {
+    if ($b -ge 1GB) { return ('{0:N1} GB' -f ($b / 1GB)) }
+    if ($b -ge 1MB) { return ('{0:N1} MB' -f ($b / 1MB)) }
+    if ($b -ge 1KB) { return ('{0:N0} KB' -f ($b / 1KB)) }
+    return "$b Bytes"
+}
+function Write-ResultFile($results) {
+    try {
+        $path = Join-Path $script:dataDir 'ergebnis.csv'
+        $sw = New-Object System.IO.StreamWriter($path, $false, (New-Object System.Text.UTF8Encoding($true)))
+        try {
+            $sw.WriteLine('Aufgabe;Aktion;Ordner;Datei;Relativer Pfad;Status')
+            foreach ($r in $results) {
+                foreach ($it in $r.Items) {
+                    $rel = [string]$it[1]; $isDir = $rel.EndsWith('\')
+                    $x = $rel.TrimEnd('\'); $i = $x.LastIndexOf('\')
+                    $dir = if ($i -ge 0) { $x.Substring(0, $i) } else { '' }
+                    $name = if ($isDir) { '' } elseif ($i -ge 0) { $x.Substring($i + 1) } else { $x }
+                    if ($isDir) { $dir = $x }
+                    $cells = foreach ($c in @($r.Name, $it[0], $dir, $name, $rel, $it[2])) {
+                        $c = [string]$c
+                        if ($c.Length -gt 0 -and '=+-@'.Contains($c[0])) { $c = "'" + $c }
+                        '"' + $c.Replace('"', '""') + '"'
+                    }
+                    $sw.WriteLine($cells -join ';')
+                }
+            }
+        } finally { $sw.Dispose() }
+        return $path
+    } catch { return $null }
+}
+function Show-ResultDialog($results) {
+    $multi = (@($results).Count -gt 1)
+    $cell = '<GridViewColumn Width="{0}"><GridViewColumnHeader Tag="{1}">{1}</GridViewColumnHeader><GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{{Binding {1}}}" {2} TextTrimming="CharacterEllipsis" ToolTip="{{Binding {1}}}"/></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>'
+    $cols = $(if ($multi) { ($cell -f 130, 'Task', '').Replace('>Task<', '>Aufgabe<') } else { '' }) + ($cell -f 220, 'Aktion', '') + ($cell -f $(if ($multi) { 270 } else { 380 }), 'Datei', '') + ($cell -f 190, 'Status', 'Foreground="{Binding StatusBrush}"')
+    $dlg = New-Dlg 'DirToy - Ergebnis' 'Width="900" Height="680" MinWidth="620" MinHeight="460"' ('<DockPanel Margin="24">
+      <TextBlock x:Name="head" DockPanel.Dock="Top" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,12"/>
+      <DockPanel DockPanel.Dock="Bottom" Margin="0,16,0,0" LastChildFill="False"><Button x:Name="csv">Details als CSV öffnen</Button><Button x:Name="close" DockPanel.Dock="Right" Style="{StaticResource Primary}" IsCancel="True" IsDefault="True">Schließen</Button></DockPanel>
+      <Border DockPanel.Dock="Top" Background="{DynamicResource Surface}" CornerRadius="12" Padding="16,12" MaxHeight="230"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="sum"/></ScrollViewer></Border>
+      <TextBlock DockPanel.Dock="Top" Style="{StaticResource MutedText}" Margin="4,14,0,8" TextWrapping="Wrap" Text="Einzelne Aktionen (Fehler zuerst). Spaltenkopf anklicken zum Sortieren, Strg+C kopiert die markierten Zeilen."/>
+      <Border Background="{DynamicResource Surface}" CornerRadius="12" Padding="4"><ListView x:Name="dv" Background="Transparent" BorderThickness="0" FontSize="13" ScrollViewer.HorizontalScrollBarVisibility="Disabled"><ListView.View><GridView AllowsColumnReorder="False">' + $cols + '</GridView></ListView.View></ListView></Border></DockPanel>')
+    $dlg.head.Text = if ($multi) { "Ergebnis: $(@($results).Count) Aufgaben" } else { "Ergebnis: $(@($results)[0].Name)" }
+    $add = { param([string]$a, [string]$b, $brush, [bool]$bold)
+        $p = New-Object System.Windows.Controls.DockPanel; $p.Margin = '0,2'
+        $r = New-Object System.Windows.Controls.TextBlock; $r.Text = $b; $r.Foreground = $brush; [System.Windows.Controls.DockPanel]::SetDock($r, 'Right')
+        $l = New-Object System.Windows.Controls.TextBlock; $l.Text = $a; $l.Foreground = $brush; $l.TextWrapping = 'Wrap'
+        if ($bold) { $l.FontWeight = 'SemiBold' }
+        [void]$p.Children.Add($r); [void]$p.Children.Add($l); [void]$dlg.sum.Children.Add($p)
+    }
+    foreach ($r in $results) {
+        if ($multi) { & $add $r.Name '' $script:br.Text $true }
+        foreach ($k in $r.Sum.Keys) { & $add $k ('{0:N0}' -f $r.Sum[$k]) $script:br.Text $false }
+        if ($r.Skipped -gt 0) { & $add 'Übersprungen' ('{0:N0}' -f $r.Skipped) $script:br.Muted $false }
+        if ($r.Errors -gt 0) { & $add 'Fehler' ('{0:N0}' -f $r.Errors) $script:br.Err $false }
+        $ts = [timespan]::FromSeconds([math]::Round($r.Seconds))
+        & $add ('Dauer ' + $ts.ToString('hh\:mm\:ss') + ', kopierte Datenmenge ' + (Format-Bytes $r.Bytes)) '' $script:br.Muted $false
+        if ($r.Cancelled) { & $add 'Der Lauf wurde abgebrochen (unvollständig, keine halben Dateien)' '' $script:br.Err $false }
+    }
+    # Details (Fehler zuerst, hoechstens 2000 Zeilen)
+    $rows = [System.Collections.ObjectModel.ObservableCollection[DirToyRow]]::new()
+    $max = 2000; $total = 0
+    foreach ($r in $results) { $total += $r.Items.Count }
+    foreach ($pass in 1, 2) {
+        foreach ($r in $results) {
+            foreach ($it in $r.Items) {
+                if (($pass -eq 1) -ne ([string]$it[2] -like 'FEHLER*')) { continue }
+                if ($rows.Count -ge $max) { break }
+                $x = [DirToyRow]::new(); $x.Task = [string]$r.Name; $x.Aktion = [string]$it[0]; $x.Datei = [string]$it[1]; $x.Status = [string]$it[2]; $x.StatusBrush = Get-StatusBrush ([string]$it[2])
+                $rows.Add($x)
+            }
+        }
+    }
+    if ($total -gt $rows.Count) {
+        $x = [DirToyRow]::new(); $x.Aktion = "... und $($total - $rows.Count) weitere Aktionen"; $x.Datei = 'komplette Liste: „Details als CSV öffnen“'; $rows.Add($x)
+    }
+    $dlg.dv.ItemsSource = $rows
+    $script:resDlg = $dlg; $script:resList = $results; $script:resSort = ''; $script:resAsc = $true
+    $dlg.dv.AddHandler([System.Windows.Controls.GridViewColumnHeader]::ClickEvent, [System.Windows.RoutedEventHandler] {
+        param($s, $e)
+        $h = $e.OriginalSource
+        if ($h -isnot [System.Windows.Controls.GridViewColumnHeader] -or -not $h.Tag) { return }
+        $script:resAsc = if ($script:resSort -eq $h.Tag) { -not $script:resAsc } else { $true }
+        $script:resSort = [string]$h.Tag
+        $v = [System.Windows.Data.CollectionViewSource]::GetDefaultView($script:resDlg.dv.ItemsSource)
+        $v.SortDescriptions.Clear()
+        $v.SortDescriptions.Add((New-Object System.ComponentModel.SortDescription($script:resSort, $(if ($script:resAsc) { 'Ascending' } else { 'Descending' }))))
+    })
+    $dlg.dv.Add_PreviewKeyDown({
+        param($s, $e)
+        if ($e.Key -eq 'C' -and [System.Windows.Input.Keyboard]::Modifiers -eq 'Control') { Copy-Rows $false $script:resDlg.dv; $e.Handled = $true }
+    })
+    $dlg.csv.Add_Click({
+        $f = Write-ResultFile $script:resList
+        if ($f) { try { Start-Process -FilePath $f -ErrorAction Stop } catch { Start-Process notepad.exe -ArgumentList "`"$f`"" } }
+        else { [void](Show-Msg 'Die CSV-Datei konnte nicht geschrieben werden.' 'DirToy' 'OK' 'Warning') }
+    })
+    $dlg.close.Add_Click({ $script:resDlg.Win.Close() })
+    Show-Dlg $dlg
+}
+function Show-ResultsIfNeeded {
+    if ($script:closeRequested -or -not [bool](Get-Setting 'ShowResult' $true)) { return }
+    $list = @($script:results | Where-Object { ($_.Copied + $_.Deleted + $_.Errors + $_.Skipped) -gt 0 -or $_.Cancelled })
+    if ($list.Count -eq 0) { return }
+    Show-ResultDialog $list
+}
+
+# ---- Hauptfenster (WPF)
+$script:xaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:sys="clr-namespace:System;assembly=mscorlib"
+        Width="1120" Height="780" MinWidth="900" MinHeight="660" WindowStartupLocation="CenterScreen"
+        FontFamily="Segoe UI" FontSize="14" Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}"
+        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
+  <Window.TaskbarItemInfo><TaskbarItemInfo x:Name="task"/></Window.TaskbarItemInfo>
+  <Window.Resources>
+@@STILE@@
   </Window.Resources>
   <Grid x:Name="root" Background="{DynamicResource Bg}">
     <Grid.ColumnDefinitions><ColumnDefinition Width="250"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -1335,20 +1281,13 @@ $script:xaml = @'
     </Grid>
   </Grid>
 </Window>
-'@
+'@.Replace('@@STILE@@', $script:styles)
 $script:win = [System.Windows.Markup.XamlReader]::Parse($script:xaml)
 $win = $script:win
 $script:ui = @{}
 foreach ($m in [regex]::Matches($script:xaml, 'x:Name="(\w+)"')) { $n = $m.Groups[1].Value; $e = $win.FindName($n); if ($e) { $script:ui[$n] = $e } }
 $ui = $script:ui
-# Farben des Designs als Ressourcen
-$script:br = @{}
-foreach ($k in $th.Keys) {
-    $c = $th[$k]; $b = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromRgb($c.R, $c.G, $c.B)); $b.Freeze()
-    $script:br[$k] = $b; $win.Resources[$k] = $b
-}
-$b = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromArgb(14, $th.Text.R, $th.Text.G, $th.Text.B)); $b.Freeze(); $win.Resources['Hover'] = $b
-$b = [System.Windows.Media.SolidColorBrush]::new($(if ($isDark) { [System.Windows.Media.Color]::FromRgb(0xFF, 0xB9, 0x00) } else { [System.Windows.Media.Color]::FromRgb(0x9D, 0x5D, 0x00) })); $b.Freeze(); $script:br['Warn'] = $b
+Set-Brushes $win
 $win.Title = "DirToy $($script:version)"
 $ico = Get-AppIcon
 if ($ico) { $win.Icon = [System.Windows.Interop.Imaging]::CreateBitmapSourceFromHIcon($ico.Handle, [System.Windows.Int32Rect]::Empty, [System.Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions()) }
@@ -1357,14 +1296,9 @@ $ui.lblTheme.Text = @{ auto = 'Design: Automatisch'; hell = 'Design: Hell'; dunk
 # $form: Besitzer fuer die Dialoge
 $script:form = New-Object DirToyOwner
 $form = $script:form
-try {
-    Add-Type -Namespace Win32 -Name Dwm -MemberDefinition '[System.Runtime.InteropServices.DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(System.IntPtr hwnd, int attr, ref int val, int size);'
-} catch { }
-$win.Add_SourceInitialized({
-    $form.H = (New-Object System.Windows.Interop.WindowInteropHelper $win).Handle
-    try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($form.H, 20, [ref]$v, 4) } catch { }
-})
-$script:updTimer = New-Object System.Windows.Forms.Timer; $script:updTimer.Interval = 300
+$win.Add_SourceInitialized({ $form.H = (New-Object System.Windows.Interop.WindowInteropHelper $win).Handle })
+Set-DarkTitle $win
+$script:updTimer = New-Object System.Windows.Threading.DispatcherTimer; $script:updTimer.Interval = [TimeSpan]::FromMilliseconds(300)
 $script:updTimer.Add_Tick({ if ($script:updTask -and $script:updTask.IsCompleted) { Finish-UpdateCheck } })
 
 # Liste der Aktionen
@@ -1381,8 +1315,8 @@ function Set-ListSort([string]$col, [bool]$asc) {
 foreach ($h in $ui.h0, $ui.h1, $ui.h2) {
     $h.Add_Click({ if (-not $script:busy) { $c = [string]$this.Tag; Set-ListSort $c $(if ($script:sortCol -eq $c) { -not $script:sortAsc } else { $true }) } })
 }
-function Copy-Rows([bool]$all) {
-    $items = if ($all) { @($ui.lv.Items) } else { @($ui.lv.Items | Where-Object { $ui.lv.SelectedItems.Contains($_) }) }
+function Copy-Rows([bool]$all, $list = $ui.lv) {
+    $items = if ($all) { @($list.Items) } else { @($list.Items | Where-Object { $list.SelectedItems.Contains($_) }) }
     if ($items.Count -eq 0) { return }
     $sb = New-Object System.Text.StringBuilder
     foreach ($r in $items) { [void]$sb.AppendLine("$($r.Aktion)`t$($r.Datei)`t$($r.Status)") }
@@ -1624,7 +1558,7 @@ $script:jobTimer = New-Object System.Windows.Threading.DispatcherTimer([System.W
 $script:jobTimer.Add_Tick({ Update-Job })
 
 # ---- Anleitung, wenn der Zeitplan nicht angelegt werden konnte (z. B. ohne Admin-Rechte)
-function Show-ManualSchedDialog($t, $s, [string]$err, $owner) {
+function Show-ManualSchedDialog($t, $s, [string]$err) {
     $cmd = Get-SchtasksCommand $t $s
     $name = 'DirToy - ' + (([string]$t.Name -replace '[\\/:*?"<>|]', '_').Trim())
     $psArgs = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$($script:scriptPath)`" -Task `"$($t.Id)`""
@@ -1653,144 +1587,107 @@ function Show-ManualSchedDialog($t, $s, [string]$err, $owner) {
         '  Button "Beim Anmelden starten": DirToy führt die Aufgabe dann bei jeder Windows-Anmeldung einmal aus (Autostart-Ordner).',
         '  Ein zeitlicher Plan oder ein Intervall ist damit nicht möglich.'
     ) -join "`r`n"
-    $f = New-Object System.Windows.Forms.Form
-    $f.Text = 'Zeitplan von Hand anlegen'; $f.ClientSize = New-Object System.Drawing.Size(640, 520); $f.StartPosition = 'CenterParent'
-    $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.ShowInTaskbar = $false
-    $f.BackColor = $th.Surface; $f.ForeColor = $th.Text; $f.Font = $fNormal
-    $tb = New-Object System.Windows.Forms.TextBox; $tb.Multiline = $true; $tb.ReadOnly = $true; $tb.ScrollBars = 'Vertical'; $tb.BorderStyle = 'FixedSingle'
-    $tb.BackColor = $th.Input; $tb.ForeColor = $th.Text; $tb.Font = $fNormal; $tb.Text = $txt
-    [void](Add-To $f $tb 16 14 608 396)
-    $tb.Select(0, 0)
-    $b1 = New-Btn $f 16 424 140 34 'Befehl kopieren' $true $null
-    $b2 = New-Btn $f 164 424 160 34 'Argumente kopieren' $false $th.Surface
-    $b3 = New-Btn $f 332 424 190 34 'Aufgabenplaner öffnen' $false $th.Surface
-    $b4 = New-Btn $f 530 424 94 34 'Schließen' $false $th.Surface
-    $b5 = New-Btn $f 16 468 250 34 'Beim Anmelden starten' $false $th.Surface
-    $script:mCmd = $cmd; $script:mArgs = $psArgs; $script:mTask = $t
-    $b1.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mCmd); [void](Show-Msg 'Der Befehl liegt in der Zwischenablage.' 'DirToy') } catch { } })
-    $b2.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mArgs); [void](Show-Msg 'Die Argumente liegen in der Zwischenablage.' 'DirToy') } catch { } })
-    $b3.Add_Click({ try { Start-Process 'taskschd.msc' } catch { [void](Show-Msg ('Der Aufgabenplaner ließ sich nicht öffnen (Windows-Taste, "Aufgabenplanung" tippen).') 'DirToy') } })
-    $b4.Add_Click({ $b4.FindForm().Close() })
-    $b5.Add_Click({
+    $dlg = New-Dlg 'Zeitplan von Hand anlegen' 'Width="720" Height="600" ResizeMode="NoResize"' '<DockPanel Margin="20">
+      <WrapPanel DockPanel.Dock="Bottom" Margin="0,16,0,0"><Button x:Name="b1" Style="{StaticResource Primary}" Margin="0,0,8,8">Befehl kopieren</Button><Button x:Name="b2" Margin="0,0,8,8">Argumente kopieren</Button><Button x:Name="b3" Margin="0,0,8,8">Aufgabenplaner öffnen</Button><Button x:Name="b5" Margin="0,0,8,8">Beim Anmelden starten</Button><Button x:Name="b4" IsCancel="True" Margin="0,0,0,8">Schließen</Button></WrapPanel>
+      <TextBox x:Name="tb" Style="{StaticResource Multi}"/></DockPanel>'
+    $dlg.tb.Text = $txt
+    $script:mCmd = $cmd; $script:mArgs = $psArgs; $script:mTask = $t; $script:mDlg = $dlg
+    $dlg.b1.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mCmd); [void](Show-Msg 'Der Befehl liegt in der Zwischenablage.' 'DirToy') } catch { } })
+    $dlg.b2.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($script:mArgs); [void](Show-Msg 'Die Argumente liegen in der Zwischenablage.' 'DirToy') } catch { } })
+    $dlg.b3.Add_Click({ try { Start-Process 'taskschd.msc' } catch { [void](Show-Msg ('Der Aufgabenplaner ließ sich nicht öffnen (Windows-Taste, "Aufgabenplanung" tippen).') 'DirToy') } })
+    $dlg.b4.Add_Click({ $script:mDlg.Win.Close() })
+    $dlg.b5.Add_Click({
         $lnk = New-AutostartLink $script:mTask
         if ($lnk) { Save-Tasks; [void](Show-Msg "Eingerichtet. DirToy führt die Aufgabe ab jetzt bei jeder Windows-Anmeldung aus.`n`n$lnk" 'DirToy') }
         else { [void](Show-Msg 'Der Eintrag im Autostart-Ordner ließ sich nicht anlegen.' 'DirToy' 'OK' 'Warning') }
     })
-    $f.Add_HandleCreated({ try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($this.Handle, 20, [ref]$v, 4) } catch { } })
-    [void]$f.ShowDialog($owner)
-    $f.Dispose()
+    Show-Dlg $dlg
 }
-# ---- Zeitplan-Dialog
-function Show-ScheduleDialog($t) {
-    $d = New-Object System.Windows.Forms.Form
-    $d.Text = 'Zeitplan'; $d.ClientSize = New-Object System.Drawing.Size(470, 448); $d.StartPosition = 'CenterParent'
-    $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false; $d.ShowInTaskbar = $false
-    $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
-    $h = New-Object System.Windows.Forms.Label; $h.Text = "Zeitplan für  '$($t.Name)'"; $h.Font = $fBold; $h.AutoSize = $false; $h.TextAlign = 'MiddleLeft'
-    [void](Add-To $d $h 20 14 430 28)
-    [void](New-Label $d 20 52 300 'Wann ausführen?' $true)
-    $script:dType = New-Object System.Windows.Forms.ComboBox; $script:dType.DropDownStyle = 'DropDownList'; $script:dType.FlatStyle = 'Flat'
-    $script:dType.BackColor = $th.Input; $script:dType.ForeColor = $th.Text
-    foreach ($x in @('Täglich', 'Wöchentlich', 'Wiederholt (alle X Minuten)', 'Bei Windows-Anmeldung')) { [void]$script:dType.Items.Add($x) }
-    [void](Add-To $d $script:dType 20 74 430 28)
-    $script:dLblTime = New-Label $d 20 114 200 'Uhrzeit' $true
-    $script:dTime = New-Object System.Windows.Forms.DateTimePicker; $script:dTime.Format = 'Custom'; $script:dTime.CustomFormat = 'HH:mm'; $script:dTime.ShowUpDown = $true
-    [void](Add-To $d $script:dTime 20 136 120 28)
-    $script:dLblMin = New-Label $d 20 114 140 'Intervall in Minuten' $true
-    $script:dMin = New-Object System.Windows.Forms.NumericUpDown; $script:dMin.Minimum = 1; $script:dMin.Maximum = 1440; $script:dMin.Value = 60
-    $script:dMin.BackColor = $th.Input; $script:dMin.ForeColor = $th.Text
-    [void](Add-To $d $script:dMin 20 136 120 28)
-    # Wiederholung (nur bei Taeglich/Woechentlich): danach alle X Minuten fuer Y Stunden
-    $script:dRep = New-Object System.Windows.Forms.CheckBox; $script:dRep.Text = 'Danach wiederholen alle'; $script:dRep.AutoSize = $false; $script:dRep.ForeColor = $th.Text
-    [void](Add-To $d $script:dRep 20 176 168 28)
-    $script:dRepMin = New-Object System.Windows.Forms.NumericUpDown; $script:dRepMin.Minimum = 1; $script:dRepMin.Maximum = 1440; $script:dRepMin.Value = 20
-    $script:dRepMin.BackColor = $th.Input; $script:dRepMin.ForeColor = $th.Text
-    [void](Add-To $d $script:dRepMin 192 176 62 28)
-    $script:dRepL1 = New-Label $d 260 181 62 'Min. für' $false
-    $script:dRepHr = New-Object System.Windows.Forms.NumericUpDown; $script:dRepHr.Minimum = 1; $script:dRepHr.Maximum = 24; $script:dRepHr.Value = 10
-    $script:dRepHr.BackColor = $th.Input; $script:dRepHr.ForeColor = $th.Text
-    [void](Add-To $d $script:dRepHr 326 176 56 28)
-    $script:dRepL2 = New-Label $d 388 181 60 'Std.' $false
-    $script:dLblDays = New-Label $d 20 216 300 'Wochentage' $true
-    $script:dDays = @(); $names = @('Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'); $en = @('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
-    for ($k = 0; $k -lt 7; $k++) {
-        $cb = New-Object System.Windows.Forms.CheckBox; $cb.Text = $names[$k]; $cb.Tag = $en[$k]; $cb.AutoSize = $false; $cb.ForeColor = $th.Text
-        [void](Add-To $d $cb (20 + $k * 60) 238 58 26); $script:dDays += $cb
-    }
-    [void](New-Label $d 20 276 430 'Windows-Meldung nach dem Lauf' $true)
-    $script:dNotify = New-Object System.Windows.Forms.ComboBox; $script:dNotify.DropDownStyle = 'DropDownList'; $script:dNotify.FlatStyle = 'Flat'
-    $script:dNotify.BackColor = $th.Input; $script:dNotify.ForeColor = $th.Text
-    foreach ($x in @('Keine Meldung', 'Wenn etwas synchronisiert wurde oder Fehler auftraten', 'Nur bei Fehlern')) { [void]$script:dNotify.Items.Add($x) }
-    [void](Add-To $d $script:dNotify 20 298 430 28)
-    $script:dInfo = New-Label $d 20 342 430 '' $true
-    $script:dInfo.Height = 36
-    $script:dSave = New-Btn $d 20 394 140 34 'Aktivieren' $true $null
-    $script:dRemove = New-Btn $d 170 394 160 34 'Zeitplan entfernen' $false $th.Surface
-    $script:dCancel = New-Btn $d 340 394 110 34 'Abbrechen' $false $th.Surface
-    $script:dTask = $t
 
-    # vorhandene Werte laden
+# ---- Zeitplan-Dialog
+function Get-SchedInput {   # liest die Eingaben; Rueckgabe: Zeitplan oder Fehlertext
+    $d = $script:sd
+    $ty = 0; foreach ($k in 0..3) { if ($d["t$k"].IsChecked) { $ty = $k } }
+    $num = { param([string]$v, [int]$lo, [int]$hi) $n = 0; if ([int]::TryParse($v.Trim(), [ref]$n) -and $n -ge $lo -and $n -le $hi) { $n } else { $null } }
+    $time = [datetime]::MinValue
+    $okTime = [datetime]::TryParseExact($d.time.Text.Trim(), [string[]]@('H:mm', 'HH:mm'), [Globalization.CultureInfo]::InvariantCulture, 'None', [ref]$time)
+    if ($ty -le 2 -and -not $okTime) { return 'Bitte eine Uhrzeit im Format HH:MM eingeben, z. B. 18:30.' }
+    $min = & $num $d.min.Text 1 1440; $rm = & $num $d.repMin.Text 1 1440; $rh = & $num $d.repHr.Text 1 24
+    if ($ty -eq 2 -and $null -eq $min) { return 'Das Intervall muss zwischen 1 und 1440 Minuten liegen.' }
+    $days = @(foreach ($k in $script:sdDays) { if ($d[$k[0]].IsChecked) { $k[1] } })
+    if ($ty -eq 1 -and $days.Count -eq 0) { return 'Bitte mindestens einen Wochentag wählen.' }
+    $rp = ($ty -le 1 -and [bool]$d.rep.IsChecked)
+    if ($rp -and ($null -eq $rm -or $null -eq $rh)) { return 'Wiederholung: 1 bis 1440 Minuten, für 1 bis 24 Stunden.' }
+    if ($rp -and $rm -gt $rh * 60) { return 'Das Intervall darf nicht länger sein als der Zeitraum.' }
+    $nt = 1; foreach ($k in 0..2) { if ($d["n$k"].IsChecked) { $nt = $k } }
+    return [pscustomobject]@{ Type = $ty; Time = $(if ($okTime) { $time.ToString('HH:mm') } else { '22:00' }); Days = $days; Minutes = $(if ($null -eq $min) { 60 } else { $min }); Start2 = ($ty -eq 2); Repeat = $rp; RepMinutes = $(if ($null -eq $rm) { 20 } else { $rm }); RepHours = $(if ($null -eq $rh) { 10 } else { $rh }); Notify = $nt }
+}
+function Update-SchedDialog {
+    $d = $script:sd
+    $ty = 0; foreach ($k in 0..3) { if ($d["t$k"].IsChecked) { $ty = $k } }
+    $vis = { param([bool]$x) if ($x) { 'Visible' } else { 'Collapsed' } }
+    $d.pTime.Visibility = & $vis ($ty -le 2)
+    $d.lTime.Text = if ($ty -eq 2) { 'Startzeit (erster Lauf)' } else { 'Uhrzeit' }
+    $d.pMin.Visibility = & $vis ($ty -eq 2)
+    if ($ty -eq 2 -and -not $script:sdNowSet) { $script:sdNowSet = $true; $d.time.Text = [datetime]::Now.ToString('HH:mm') }
+    $d.pRep.Visibility = & $vis ($ty -le 1)
+    $on = ($ty -le 1 -and [bool]$d.rep.IsChecked)
+    $d.repMin.IsEnabled = $d.repHr.IsEnabled = $on
+    $d.pDays.Visibility = & $vis ($ty -eq 1)
+    $d.info.Text = 'Die Aufgabe läuft im Hintergrund, solange du angemeldet bist. ' + $(if ($ty -eq 2 -or $on) { 'Verpasste Läufe werden bei Intervallen nicht nachgeholt.' } else { 'Verpasste Läufe werden nachgeholt.' })
+}
+$script:sdDays = @(@('d0', 'Monday'), @('d1', 'Tuesday'), @('d2', 'Wednesday'), @('d3', 'Thursday'), @('d4', 'Friday'), @('d5', 'Saturday'), @('d6', 'Sunday'))
+function Show-ScheduleDialog($t) {
+    $dlg = New-Dlg 'Zeitplan' 'Width="600" SizeToContent="Height" ResizeMode="NoResize"' '<StackPanel Margin="24">
+      <TextBlock x:Name="head" FontSize="20" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,0,0,16"/>
+      <TextBlock Text="Wann ausführen?" Style="{StaticResource MutedText}" Margin="0,0,0,6"/>
+      <Border Background="{DynamicResource Surface}" CornerRadius="8" HorizontalAlignment="Left"><StackPanel Orientation="Horizontal"><RadioButton x:Name="t0" GroupName="t" Style="{StaticResource Seg}">Täglich</RadioButton><RadioButton x:Name="t1" GroupName="t" Style="{StaticResource Seg}">Wöchentlich</RadioButton><RadioButton x:Name="t2" GroupName="t" Style="{StaticResource Seg}">Alle X Minuten</RadioButton><RadioButton x:Name="t3" GroupName="t" Style="{StaticResource Seg}">Bei Anmeldung</RadioButton></StackPanel></Border>
+      <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+        <StackPanel x:Name="pMin" Margin="0,0,20,0"><TextBlock Text="Intervall in Minuten" Style="{StaticResource MutedText}" Margin="0,0,0,6"/><TextBox x:Name="min" Width="120" AutomationProperties.Name="Intervall in Minuten"/></StackPanel>
+        <StackPanel x:Name="pTime"><TextBlock x:Name="lTime" Style="{StaticResource MutedText}" Margin="0,0,0,6"/><TextBox x:Name="time" Width="120" AutomationProperties.Name="Uhrzeit"/></StackPanel></StackPanel>
+      <StackPanel x:Name="pDays" Orientation="Horizontal" Margin="0,16,0,0"><CheckBox x:Name="d0" Style="{StaticResource Chip}">Mo</CheckBox><CheckBox x:Name="d1" Style="{StaticResource Chip}">Di</CheckBox><CheckBox x:Name="d2" Style="{StaticResource Chip}">Mi</CheckBox><CheckBox x:Name="d3" Style="{StaticResource Chip}">Do</CheckBox><CheckBox x:Name="d4" Style="{StaticResource Chip}">Fr</CheckBox><CheckBox x:Name="d5" Style="{StaticResource Chip}">Sa</CheckBox><CheckBox x:Name="d6" Style="{StaticResource Chip}">So</CheckBox></StackPanel>
+      <StackPanel x:Name="pRep" Orientation="Horizontal" Margin="0,16,0,0"><CheckBox x:Name="rep" VerticalAlignment="Center">Danach wiederholen alle</CheckBox><TextBox x:Name="repMin" Width="60" Margin="10,0" AutomationProperties.Name="Wiederholung in Minuten"/><TextBlock Text="Min. für" VerticalAlignment="Center"/><TextBox x:Name="repHr" Width="50" Margin="10,0" AutomationProperties.Name="Wiederholung für Stunden"/><TextBlock Text="Std." VerticalAlignment="Center"/></StackPanel>
+      <TextBlock Text="Windows-Meldung nach dem Lauf" Style="{StaticResource MutedText}" Margin="0,20,0,8"/>
+      <RadioButton x:Name="n0" GroupName="n" Margin="0,0,0,8">Keine Meldung</RadioButton><RadioButton x:Name="n1" GroupName="n" Margin="0,0,0,8">Wenn etwas synchronisiert wurde oder Fehler auftraten</RadioButton><RadioButton x:Name="n2" GroupName="n">Nur bei Fehlern</RadioButton>
+      <TextBlock x:Name="info" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,20,0,0"/>
+      <DockPanel Margin="0,20,0,0" LastChildFill="False"><Button x:Name="save" Style="{StaticResource Primary}" IsDefault="True" MinWidth="120" Margin="0,0,8,0">Aktivieren</Button><Button x:Name="remove">Zeitplan entfernen</Button><Button x:Name="cancel" DockPanel.Dock="Right" IsCancel="True">Abbrechen</Button></DockPanel>
+    </StackPanel>'
+    $script:sd = $dlg; $script:sdTask = $t
+    $dlg.head.Text = "Zeitplan für $($t.Name)"
     $sc = $t.Schedule
     # Startzeit beim Intervall: bei neuen Zeitplaenen und Altbestand ohne Startzeit ist der Vorschlag "jetzt"
-    $script:dNowSet = [bool]($sc -and [int]$sc.Type -eq 2 -and [bool]$sc.Start2)
-    $script:dType.SelectedIndex = if ($sc) { [int]$sc.Type } else { 0 }
-    $script:dNotify.SelectedIndex = if ($sc -and $null -ne $sc.Notify) { [int]$sc.Notify } else { 1 }
+    $script:sdNowSet = [bool]($sc -and [int]$sc.Type -eq 2 -and [bool]$sc.Start2)
+    $dlg.time.Text = '22:00'; $dlg.min.Text = '60'; $dlg.repMin.Text = '20'; $dlg.repHr.Text = '10'
+    $ty = if ($sc) { [int]$sc.Type } else { 0 }
+    $dlg["t$ty"].IsChecked = $true
+    $dlg["n$(if ($sc -and $null -ne $sc.Notify) { [int]$sc.Notify } else { 1 })"].IsChecked = $true
+    foreach ($k in $script:sdDays) { $dlg[$k[0]].IsChecked = $(if ($sc) { @($sc.Days) -contains $k[1] } else { $k[1] -notin @('Saturday', 'Sunday') }) }
     if ($sc) {
-        try { $hm = ([string]$sc.Time).Split(':'); $script:dTime.Value = [datetime]::Today.AddHours([int]$hm[0]).AddMinutes([int]$hm[1]) } catch { }
-        if ($sc.Minutes) { $script:dMin.Value = [int]$sc.Minutes }
-        foreach ($cb in $script:dDays) { $cb.Checked = (@($sc.Days) -contains $cb.Tag) }
+        if ([string]$sc.Time) { $dlg.time.Text = [string]$sc.Time }
+        if ($sc.Minutes) { $dlg.min.Text = [string]$sc.Minutes }
         if ([bool]$sc.Repeat) {
-            $script:dRep.Checked = $true
-            if ($sc.RepMinutes) { $script:dRepMin.Value = [int]$sc.RepMinutes }
-            if ($sc.RepHours) { $script:dRepHr.Value = [int]$sc.RepHours }
+            $dlg.rep.IsChecked = $true
+            if ($sc.RepMinutes) { $dlg.repMin.Text = [string]$sc.RepMinutes }
+            if ($sc.RepHours) { $dlg.repHr.Text = [string]$sc.RepHours }
         }
-    } else { $script:dTime.Value = [datetime]::Today.AddHours(22); foreach ($cb in $script:dDays) { $cb.Checked = ($cb.Tag -notin @('Saturday', 'Sunday')) } }
-    $script:dRemove.Enabled = [bool]$t.SchedName
-    if ($t.SchedName) { $script:dSave.Text = 'Speichern' }
-
-    $upd = {
-        $ty = $script:dType.SelectedIndex
-        $script:dLblTime.Visible = $script:dTime.Visible = ($ty -ge 0 -and $ty -le 2)
-        # Beim Intervall steht die Startzeit rechts neben dem Intervall, sonst an der Stelle der Uhrzeit
-        $tx = if ($ty -eq 2) { 170 } else { 20 }
-        $script:dLblTime.Location = New-Object System.Drawing.Point($tx, 114); $script:dTime.Location = New-Object System.Drawing.Point($tx, 136)
-        $script:dLblTime.Text = if ($ty -eq 2) { 'Startzeit (erster Lauf)' } else { 'Uhrzeit' }
-        $script:dLblMin.Visible = $script:dMin.Visible = ($ty -eq 2)
-        if ($ty -eq 2 -and -not $script:dNowSet) { $script:dNowSet = $true; $script:dTime.Value = [datetime]::Now }
-        $vis = ($ty -ge 0 -and $ty -le 1)
-        $on = ($vis -and $script:dRep.Checked)
-        $script:dRep.Visible = $script:dRepMin.Visible = $script:dRepHr.Visible = $script:dRepL1.Visible = $script:dRepL2.Visible = $vis
-        $script:dRepMin.Enabled = $script:dRepHr.Enabled = $on
-        $script:dLblDays.Visible = ($ty -eq 1); foreach ($cb in $script:dDays) { $cb.Visible = ($ty -eq 1) }
-        $script:dInfo.Text = if ($ty -eq 2 -or $on) { 'Die Aufgabe läuft im Hintergrund, solange du angemeldet bist. Verpasste Läufe werden bei Intervallen nicht nachgeholt.' }
-                             else { 'Die Aufgabe läuft im Hintergrund, solange du angemeldet bist. Verpasste Läufe werden nachgeholt.' }
     }
-    $script:dType.Add_SelectedIndexChanged($upd)
-    $script:dRep.Add_CheckedChanged($upd)
-    $script:dType.SelectedIndex = -1; $script:dType.SelectedIndex = if ($sc) { [int]$sc.Type } else { 0 }
-
-    $script:dSave.Add_Click({
-        $ty = $script:dType.SelectedIndex
-        $days = @($script:dDays | Where-Object { $_.Checked } | ForEach-Object { [string]$_.Tag })
-        if ($ty -eq 1 -and $days.Count -eq 0) { [void](Show-Msg 'Bitte mindestens einen Wochentag wählen.' 'Zeitplan'); return }
-        $rp = ($ty -le 1 -and $script:dRep.Checked)
-        if ($rp -and [int]$script:dRepMin.Value -gt [int]$script:dRepHr.Value * 60) { [void](Show-Msg 'Das Intervall darf nicht länger sein als der Zeitraum.' 'Zeitplan'); return }
-        $tt = $script:dTask
-        $new = [pscustomobject]@{ Type = $ty; Time = $script:dTime.Value.ToString('HH:mm'); Days = $days; Minutes = [int]$script:dMin.Value; Start2 = ($ty -eq 2); Repeat = $rp; RepMinutes = [int]$script:dRepMin.Value; RepHours = [int]$script:dRepHr.Value; Notify = $script:dNotify.SelectedIndex }
-        try { Register-Sched $tt $new; Save-Tasks; $script:dSave.FindForm().DialogResult = 'OK' }
-        catch { Show-ManualSchedDialog $tt $new $_.Exception.Message $script:dSave.FindForm() }
+    $dlg.remove.IsEnabled = [bool]$t.SchedName
+    if ($t.SchedName) { $dlg.save.Content = 'Speichern' }
+    foreach ($k in 't0', 't1', 't2', 't3') { $dlg[$k].Add_Checked({ Update-SchedDialog }) }
+    $dlg.rep.Add_Checked({ Update-SchedDialog }); $dlg.rep.Add_Unchecked({ Update-SchedDialog })
+    Update-SchedDialog
+    $dlg.save.Add_Click({
+        $new = Get-SchedInput
+        if ($new -is [string]) { [void](Show-Msg $new 'Zeitplan' 'OK' 'Warning'); return }
+        try { Register-Sched $script:sdTask $new; Save-Tasks; $script:sd.Win.Close() }
+        catch { Show-ManualSchedDialog $script:sdTask $new $_.Exception.Message }
     })
-    $script:dRemove.Add_Click({
-        $tt = $script:dTask
-        try { Unregister-Sched $tt; $tt.Schedule = $null; Save-Tasks; $script:dSave.FindForm().DialogResult = 'OK' }
+    $dlg.remove.Add_Click({
+        try { Unregister-Sched $script:sdTask; $script:sdTask.Schedule = $null; Save-Tasks; $script:sd.Win.Close() }
         catch { [void](Show-Msg $_.Exception.Message 'Fehler' 'OK' 'Error') }
     })
-    $script:dCancel.Add_Click({ $script:dSave.FindForm().DialogResult = 'Cancel' })
-    $d.Add_HandleCreated({
-        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($script:dSave.FindForm().Handle, 20, [ref]$v, 4) } catch { }
-    })
-    [void]$d.ShowDialog($form)
-    $d.Dispose()
+    $dlg.cancel.Add_Click({ $script:sd.Win.Close() })
+    Show-Dlg $dlg
 }
 function Update-SchedLabel {
     $t = $script:cur
@@ -1806,44 +1703,48 @@ function Update-SchedLabel {
 }
 # ---- Hilfe-Fenster
 function Show-Help {
-    $d = New-Object System.Windows.Forms.Form
-    $d.Text = 'DirToy - Hilfe'; $d.ClientSize = New-Object System.Drawing.Size(680, 640); $d.MinimumSize = New-Object System.Drawing.Size(520, 400)
-    $d.StartPosition = 'CenterParent'; $d.ShowInTaskbar = $false; $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
-    $rb = New-Object System.Windows.Forms.RichTextBox
-    $rb.ReadOnly = $true; $rb.BorderStyle = 'None'; $rb.BackColor = $th.Surface; $rb.ForeColor = $th.Text; $rb.Font = $fNormal
-    $rb.Location = New-Object System.Drawing.Point(24, 16); $rb.Size = New-Object System.Drawing.Size(632, 552); $rb.Anchor = $A_ALL
-    $rb.DetectUrls = $false; $rb.TabStop = $false
-    $d.Controls.Add($rb)
-    function HelpH($t) { $rb.SelectionStart = $rb.TextLength; $rb.SelectionFont = $fBold; $rb.SelectionColor = $th.Accent; $rb.AppendText("`n$t`n") }
-    function HelpP($t) { $rb.SelectionStart = $rb.TextLength; $rb.SelectionFont = $fNormal; $rb.SelectionColor = $th.Text; $rb.AppendText("$t`n") }
-    function HelpB($k, $t) {
-        $rb.SelectionStart = $rb.TextLength; $rb.SelectionFont = $fBold; $rb.SelectionColor = $th.Text; $rb.AppendText("   $k")
-        $rb.SelectionStart = $rb.TextLength; $rb.SelectionFont = $fNormal; $rb.SelectionColor = $th.Text; $rb.AppendText("  $t`n")
+    $dlg = New-Dlg 'DirToy - Hilfe' 'Width="760" Height="720" MinWidth="560" MinHeight="420"' '<DockPanel Margin="24,16,24,20">
+      <DockPanel DockPanel.Dock="Bottom" Margin="0,16,0,0" LastChildFill="False"><Button x:Name="lnk" Margin="0,0,16,0">Desktop-Verknüpfung</Button><CheckBox x:Name="showRes" VerticalAlignment="Center">Ergebnis-Fenster nach dem Lauf zeigen</CheckBox><Button x:Name="close" DockPanel.Dock="Right" Style="{StaticResource Primary}" IsCancel="True" IsDefault="True">Schließen</Button></DockPanel>
+      <ScrollViewer x:Name="sv" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="p" Margin="0,0,16,0"/></ScrollViewer></DockPanel>'
+    $script:hp = $dlg.p
+    $script:helpDlg = $dlg
+    function HelpT([string]$t, [double]$size, $brush, [string]$margin, [bool]$bold) {
+        $x = New-Object System.Windows.Controls.TextBlock; $x.Text = $t; $x.FontSize = $size; $x.Foreground = $brush; $x.Margin = $margin; $x.TextWrapping = 'Wrap'
+        if ($bold) { $x.FontWeight = 'SemiBold' }
+        [void]$script:hp.Children.Add($x); return
     }
-    $rb.SelectionStart = 0; $rb.SelectionFont = $fTitle; $rb.SelectionColor = $th.Accent; $rb.AppendText("DirToy`n")
-    $rb.SelectionStart = $rb.TextLength; $rb.SelectionFont = $fSmall; $rb.SelectionColor = $th.Muted; $rb.AppendText("Version $($script:version)`n`n")
+    function HelpH($t) { HelpT $t 16 $script:br.Accent '0,20,0,4' $true }
+    function HelpP($t) { HelpT ([string]$t).Trim() 14 $script:br.Text '0,3' $false }
+    function HelpB($k, $t) {
+        $x = New-Object System.Windows.Controls.TextBlock; $x.TextWrapping = 'Wrap'; $x.Margin = '12,3,0,3'
+        $r = New-Object System.Windows.Documents.Run "$k   "; $r.FontWeight = 'SemiBold'
+        $x.Inlines.Add($r); $x.Inlines.Add((New-Object System.Windows.Documents.Run ([string]$t)))
+        [void]$script:hp.Children.Add($x)
+    }
+    HelpT 'DirToy' 26 $script:br.Accent '0' $true
+    HelpT "Version $($script:version)" 12 $script:br.Muted '0,0,0,10' $false
     HelpP 'Hält zwei Ordner synchron. Du kannst beliebig viele Aufgaben anlegen, jede mit eigenen Ordnern, Modus, Ausschlüssen und Zeitplan.'
     HelpH 'So geht es'
-    HelpB '1.' 'Links auf "+ Neu" klicken und der Aufgabe einen Namen geben.'
-    HelpB '2.' 'Ordner A und Ordner B wählen (Button "...").'
+    HelpB '1.' 'Links auf "Neue Aufgabe" klicken und der Aufgabe einen Namen geben.'
+    HelpB '2.' 'Ordner A und Ordner B wählen (Knopf "..." neben dem Pfad).'
     HelpB '3.' 'Modus wählen (siehe unten).'
     HelpB '4.' '"Vorschau" zeigt, was passieren würde, ohne etwas zu verändern.'
-    HelpB '5.' '"Synchronisieren" führt es aus. Der Balken zeigt den Fortschritt, die Liste das Ergebnis.'
+    HelpB '5.' '"Starten" führt es aus. Zwischen den Ordnern siehst du die Richtung, der Balken zeigt den Fortschritt, die Liste das Ergebnis.'
     HelpH 'Die drei Modi'
     HelpB 'Synchronisieren' 'Beide Richtungen. Neue und geänderte Dateien werden auf die andere Seite kopiert, bei Änderungen auf beiden Seiten gewinnt die neuere Datei. Löscht du eine Datei auf einer Seite, wird sie beim nächsten Lauf auch auf der anderen gelöscht. Beim allerersten Lauf wird nichts gelöscht.'
     HelpB 'Echo' 'Nur A nach B. B wird zu einer exakten Kopie von A: Was in A fehlt, wird in B gelöscht, und Änderungen in B werden überschrieben.'
     HelpB 'Beitragen' 'Nur A nach B. Neue und geänderte Dateien aus A werden kopiert, es wird nie etwas gelöscht.'
     HelpP '   Bei gleicher Zeit, aber anderer Größe meldet das Tool einen Konflikt und überspringt die Datei.'
     HelpH 'Nicht synchronisieren'
-    HelpP 'Im Feld stehen Dateinamen oder Muster, getrennt mit Semikolon. * steht für beliebig viele Zeichen, ? für ein Zeichen. Die Muster gelten für Dateien und Ordnernamen in beiden Ordnern. Ausgeschlossenes wird weder kopiert noch gelöscht.'
+    HelpP 'Das Feld liegt hinter dem Zahnrad oben rechts. Darin stehen Dateinamen oder Muster, getrennt mit Semikolon. * steht für beliebig viele Zeichen, ? für ein Zeichen. Die Muster gelten für Dateien und Ordnernamen in beiden Ordnern. Ausgeschlossenes wird weder kopiert noch gelöscht.'
     HelpB 'Beispiele' 'Thumbs.db;*.tmp;~$*;node_modules;*.bak'
     HelpH 'Ordner abwählen'
-    HelpP 'Mit "Ordner wählen ..." siehst du beide Ordner als Baum nebeneinander. Entfernst du bei einem Ordner den Haken, wird er samt allen Unterordnern nicht synchronisiert (auf keiner Seite kopiert oder gelöscht). Der Haken gilt für beide Seiten. Neue Ordner, die später dazukommen, sind immer dabei, gespeichert werden nur die abgewählten. Ein abgewählter Ordner bleibt auch dann abgewählt, wenn er gelöscht und später neu angelegt wird; solche Einträge erscheinen grau mit "(nicht vorhanden)" und lassen sich durch Anhaken entfernen. "Alle wieder einschließen" setzt alle Haken zurück.'
+    HelpP 'Hinter dem Zahnrad oben rechts, mit "Ordner abwählen ...", siehst du beide Ordner als Baum nebeneinander. Entfernst du bei einem Ordner den Haken, wird er samt allen Unterordnern nicht synchronisiert (auf keiner Seite kopiert oder gelöscht). Der Haken gilt für beide Seiten. Neue Ordner, die später dazukommen, sind immer dabei, gespeichert werden nur die abgewählten. Ein abgewählter Ordner bleibt auch dann abgewählt, wenn er gelöscht und später neu angelegt wird; solche Einträge erscheinen grau mit "(nicht vorhanden)" und lassen sich durch Anhaken entfernen. "Alle wieder einschließen" setzt alle Haken zurück.'
     HelpH 'Löschen und Sicherheit'
     HelpP 'Dateien werden zuerst unter einem Zwischennamen (.dirtoy-tmp) kopiert und erst am Ende umbenannt. Bricht ein Lauf ab oder schließt du das Fenster, bleibt die alte Datei im Ziel unverändert; übrig gebliebene Zwischendateien räumt DirToy beim nächsten Lauf auf. Mit "Abbrechen" stoppst du einen Lauf nach der aktuellen Datei.'
-    HelpP 'Vor dem Löschen fragt das Tool nach. Gelöscht wird in den Papierkorb, bei Netzlaufwerken ohne Papierkorb aber endgültig. Schau dir deshalb bei "Synchronisieren" und "Echo" zuerst die Vorschau an. Ordner dürfen nicht identisch sein oder ineinander liegen. Ordner werden komplett mit allen Unterordnern gespiegelt, auch leere. Ein Ordner wird nur gelöscht, wenn er danach wirklich leer ist (ausgeschlossene Dateien darin verhindern das Löschen).'
+    HelpP 'Kann ein Ordner nicht gelesen werden, wird dort auf beiden Seiten nichts verändert. Vor dem Löschen fragt das Tool nach. Gelöscht wird in den Papierkorb, bei Netzlaufwerken ohne Papierkorb aber endgültig. Schau dir deshalb bei "Synchronisieren" und "Echo" zuerst die Vorschau an. Ordner dürfen nicht identisch sein oder ineinander liegen. Ordner werden komplett mit allen Unterordnern gespiegelt, auch leere. Ein Ordner wird nur gelöscht, wenn er danach wirklich leer ist (ausgeschlossene Dateien darin verhindern das Löschen).'
     HelpH 'Zeitplan (automatisch)'
-    HelpP 'Mit "Zeitplan ..." legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten (mit Startzeit) oder bei der Anmeldung. Täglich und wöchentlich lassen sich mit "Danach wiederholen alle ... Min. für ... Std." kombinieren (z. B. täglich ab 08:00 alle 20 Minuten für 10 Stunden). Du kannst den Eintrag im Aufgabenplaner jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt, bei Intervallen und Wiederholungen aber nicht. DirToy prüft nach dem Anlegen, ob der Eintrag wirklich existiert. Fehlen auf dem Rechner die Rechte (kein Administrator), zeigt DirToy eine Anleitung zum Anlegen von Hand, mit kopierbarem Befehl und als Notlösung einem Autostart-Eintrag. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen.'
+    HelpP 'Mit dem Zeitplan-Knopf oben rechts legst du für die gewählte Aufgabe einen Eintrag im Windows-Aufgabenplaner an: täglich, wöchentlich, alle X Minuten (mit Startzeit) oder bei der Anmeldung. Täglich und wöchentlich lassen sich mit "Danach wiederholen alle ... Min. für ... Std." kombinieren (z. B. täglich ab 08:00 alle 20 Minuten für 10 Stunden). Du kannst den Eintrag im Aufgabenplaner jederzeit ändern oder entfernen. Das Tool muss dafür nicht laufen, aber du musst bei Windows angemeldet sein. Verpasste Läufe werden nachgeholt, bei Intervallen und Wiederholungen aber nicht. DirToy prüft nach dem Anlegen, ob der Eintrag wirklich existiert. Fehlen auf dem Rechner die Rechte (kein Administrator), zeigt DirToy eine Anleitung zum Anlegen von Hand, mit kopierbarem Befehl und als Notlösung einem Autostart-Eintrag. Bei automatischen Läufen gibt es keine Rückfrage vor dem Löschen. Wirkt eine Löschung auffällig (eine Seite ist ganz leer, oder mindestens 10 Dateien und mehr als die Hälfte würden gelöscht), bricht der automatische Lauf ab, ohne etwas zu verändern. Ist das gewollt, die Aufgabe einmal von Hand starten.'
     HelpP 'Nach einem automatischen Lauf kann eine Windows-Meldung erscheinen: nie, wenn etwas passiert ist oder Fehler auftraten, oder nur bei Fehlern.'
     HelpH 'Große Vorschau'
     HelpP 'Die Liste zeigt höchstens 2000 Zeilen. Gibt es mehr Aktionen, steht am Ende die Zeile "... und N weitere Aktionen": Ein Doppelklick darauf öffnet die komplette Vorschau als CSV-Datei (DirToy-Daten\vorschau.csv, z. B. in Excel) mit den Spalten Aktion, Ordner, Datei und Relativer Pfad, die du dort filtern und sortieren kannst. Die Summen je Aktion stehen schon in der Liste. Bei einem echten Lauf läuft die Liste mit: Es bleiben die letzten 2000 Aktionen sichtbar, die ältesten fallen oben heraus (Fehler werden am Ende noch einmal aufgelistet). Alle Aktionen werden ausgeführt und stehen im Protokoll.'
@@ -1856,32 +1757,19 @@ function Show-Help {
     HelpP 'Beim Start fragt DirToy im Hintergrund bei GitHub nach einer neueren Version (nur die Versionsnummer wird abgefragt, es werden keine Daten von dir gesendet). Gibt es eine, erscheint links der Button "Update verfügbar". Dort kannst du "Jetzt aktualisieren" wählen (lädt DirToy.ps1 aus dem Release, prüft sie, sichert die alte Datei als DirToy.ps1.bak-<Version> und startet neu) oder die Release-Seite im Browser öffnen. Ein Klick auf "Updates prüfen" unter dem Titel sucht von Hand; dort lässt sich die automatische Suche auch abschalten. Aufgaben im Aufgabenplaner suchen nie nach Updates.'
     HelpH 'Wo liegen meine Daten?'
     HelpP 'Aufgaben und Zeitpläne stehen in DirToy-Daten\aufgaben.json neben dem Programm. Darf DirToy dort nicht schreiben (z. B. in C:\Program Files ohne Administratorrechte), nutzt es automatisch den Ordner %APPDATA%\DirToy und übernimmt vorhandene Aufgaben dorthin. Verschiebst du DirToy.ps1, speichere die Zeitpläne danach einmal neu. Bei Startproblemen steht der Grund in DirToy-Daten\fehler.log.'
-    $rb.SelectionStart = 0; $rb.ScrollToCaret()
-    $bs = New-Btn $d 24 584 200 36 'Desktop-Verknüpfung' $false $th.Surface; $bs.Anchor = $A_BL
-    $bs.Add_Click({
+    $dlg.showRes.IsChecked = [bool](Get-Setting 'ShowResult' $true)
+    $dlg.showRes.Add_Checked({ Set-Setting 'ShowResult' $true }); $dlg.showRes.Add_Unchecked({ Set-Setting 'ShowResult' $false })
+    $dlg.lnk.Add_Click({
         $p = New-DesktopShortcut
         if ($p) { [void](Show-Msg "Die Verknüpfung wurde auf dem Desktop angelegt:`n$p" 'DirToy' 'OK' 'Information') }
         else { [void](Show-Msg 'Die Verknüpfung konnte nicht angelegt werden.' 'DirToy' 'OK' 'Warning') }
     })
-    $cbr = New-Object System.Windows.Forms.CheckBox; $cbr.Text = 'Ergebnis-Fenster nach dem Lauf zeigen'; $cbr.AutoSize = $true; $cbr.BackColor = [System.Drawing.Color]::Transparent
-    $cbr.Checked = [bool](Get-Setting 'ShowResult' $true); $cbr.Location = New-Object System.Drawing.Point(240, 592); $cbr.Anchor = $A_BL
-    $cbr.Add_CheckedChanged({ Set-Setting 'ShowResult' $this.Checked })
-    $d.Controls.Add($cbr)
-    $bc = New-Btn $d 556 584 100 36 'Schließen' $true $null; $bc.Anchor = $A_BR
-    $script:helpClose = $bc
-    $bc.Add_Click({ $script:helpClose.FindForm().Close() })
-    $d.Add_HandleCreated({
-        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($script:helpClose.FindForm().Handle, 20, [ref]$v, 4) } catch { }
-    })
-    [void]$d.ShowDialog($form)
-    $d.Dispose()
+    $dlg.close.Add_Click({ $script:helpDlg.Win.Close() })
+    Show-Dlg $dlg
 }
+
 # ---- Update-Fenster (mode: new = neue Version da, current = aktuell, error = Pruefung fehlgeschlagen)
 function Show-UpdateDialog($info, [string]$mode) {
-    $d = New-Object System.Windows.Forms.Form
-    $d.Text = 'DirToy - Update'; $d.ClientSize = New-Object System.Drawing.Size(560, 420)
-    $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
-    $d.StartPosition = 'CenterParent'; $d.ShowInTaskbar = $false; $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
     $head = switch ($mode) {
         'new' { "Neue Version verfügbar: $($info.Version)" }
         'current' { 'DirToy ist aktuell' }
@@ -1892,43 +1780,23 @@ function Show-UpdateDialog($info, [string]$mode) {
         'current' { "Du hast die neueste Version ($($script:version))." }
         default { 'Es konnte keine Verbindung zu GitHub hergestellt werden (oder es gibt noch keinen Release).' }
     }
-    $l1 = New-Label $d 24 18 512 $head $false; $l1.Font = $fBold; $l1.ForeColor = $th.Accent
-    $l2 = New-Label $d 24 44 512 $sub $true
-    $btnY = 366
-    if ($mode -eq 'new') {
-        [void](New-Label $d 24 76 512 'Änderungen' $true)
-        $rb = New-Object System.Windows.Forms.RichTextBox
-        $rb.ReadOnly = $true; $rb.BorderStyle = 'None'; $rb.BackColor = $th.Input; $rb.ForeColor = $th.Text; $rb.Font = $fSmall; $rb.DetectUrls = $false
-        $rb.Location = New-Object System.Drawing.Point(24, 100); $rb.Size = New-Object System.Drawing.Size(512, 190)
+    $new = ($mode -eq 'new')
+    $dlg = New-Dlg 'DirToy - Update' 'Width="600" SizeToContent="Height" ResizeMode="NoResize"' ('<StackPanel Margin="24"><TextBlock x:Name="head" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource Accent}"/><TextBlock x:Name="sub" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,0"/>' +
+        $(if ($new) { '<TextBlock Text="Änderungen" Style="{StaticResource MutedText}" Margin="0,16,0,6"/><TextBox x:Name="notes" Style="{StaticResource Multi}" Height="240" AutomationProperties.Name="Änderungen"/>' } else { '' }) +
+        '<CheckBox x:Name="auto" Margin="0,18,0,0">Beim Start automatisch nach Updates suchen</CheckBox><DockPanel Margin="0,20,0,0" LastChildFill="False">' +
+        $(if ($new) { '<Button x:Name="go" Style="{StaticResource Primary}" IsDefault="True" Margin="0,0,8,0">Jetzt aktualisieren</Button><Button x:Name="web">Release-Seite</Button><Button x:Name="later" DockPanel.Dock="Right" IsCancel="True">Später</Button>' } else { '<Button x:Name="later" DockPanel.Dock="Right" Style="{StaticResource Primary}" IsCancel="True" IsDefault="True">Schließen</Button>' }) + '</DockPanel></StackPanel>')
+    $dlg.head.Text = $head; $dlg.sub.Text = $sub
+    $dlg.auto.IsChecked = [bool](Get-Setting 'UpdateCheck' $true)
+    $script:updAction = ''; $script:updDlg = $dlg
+    if ($new) {
         $notes = [string]$info.Notes; if ($notes.Length -gt 3000) { $notes = $notes.Substring(0, 3000) + ' ...' }
-        $rb.Text = $(if ($notes.Trim()) { $notes } else { '(keine Beschreibung)' })
-        $d.Controls.Add($rb)
+        $dlg.notes.Text = $(if ($notes.Trim()) { $notes } else { '(keine Beschreibung)' })
+        $dlg.go.Add_Click({ $script:updAction = 'install'; $script:updDlg.Win.Close() })
+        $dlg.web.Add_Click({ $script:updAction = 'web'; $script:updDlg.Win.Close() })
     }
-    $cb = New-Object System.Windows.Forms.CheckBox
-    $cb.Text = 'Beim Start automatisch nach Updates suchen'; $cb.AutoSize = $true; $cb.BackColor = [System.Drawing.Color]::Transparent
-    $cb.Checked = [bool](Get-Setting 'UpdateCheck' $true)
-    $cb.Location = New-Object System.Drawing.Point(24, 308); $d.Controls.Add($cb)
-    $script:updAction = ''
-    $script:updForm = $d
-    if ($mode -eq 'new') {
-        $bu = New-Btn $d 24 $btnY 170 38 'Jetzt aktualisieren' $true $null
-        $bw = New-Btn $d 204 $btnY 170 38 'Release-Seite' $false $th.Surface
-        $bl = New-Btn $d 384 $btnY 152 38 'Später' $false $th.Surface
-        $bu.Add_Click({ $script:updAction = 'install'; $script:updForm.Close() })
-        $bw.Add_Click({ $script:updAction = 'web'; $script:updForm.Close() })
-        $bl.Add_Click({ $script:updForm.Close() })
-        $d.CancelButton = $bl
-    } else {
-        $bl = New-Btn $d 384 $btnY 152 38 'Schließen' $true $null
-        $bl.Add_Click({ $script:updForm.Close() })
-        $d.CancelButton = $bl
-    }
-    $d.Add_HandleCreated({
-        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($script:updForm.Handle, 20, [ref]$v, 4) } catch { }
-    })
-    [void]$d.ShowDialog($form)
-    Set-Setting 'UpdateCheck' $cb.Checked
-    $d.Dispose()
+    $dlg.later.Add_Click({ $script:updDlg.Win.Close() })
+    Show-Dlg $dlg
+    Set-Setting 'UpdateCheck' ([bool]$dlg.auto.IsChecked)
     return $script:updAction
 }
 # Startet DirToy neu (Design-Wechsel, Update); der Aufrufer schliesst danach das Fenster
@@ -2049,9 +1917,8 @@ function Test-AncExcluded([string]$path) {
     return $false
 }
 function New-TreeNodeFor([string]$text, [string]$path, [string]$kind, [string]$root) {
-    $n = New-Object System.Windows.Forms.TreeNode($text)
-    $n.Tag = @{ Path = $path; Kind = $kind; Root = $root; Loaded = ($kind -ne 'normal') }
-    if ($kind -eq 'normal') { [void]$n.Nodes.Add((New-Object System.Windows.Forms.TreeNode('...'))) }   # Platzhalter fuer Pfeil
+    $n = [DirToyNode]::new(); $n.Text = $text; $n.Path = $path; $n.Kind = $kind; $n.Root = $root; $n.Loaded = ($kind -ne 'normal')
+    if ($kind -eq 'normal') { $x = [DirToyNode]::new(); $x.Text = '...'; $x.Kind = 'dummy'; $x.Loaded = $true; $n.Nodes.Add($x) }   # Platzhalter fuer Pfeil
     return $n
 }
 function Fill-Nodes($coll, [string]$parentPath, [string]$root) {
@@ -2061,43 +1928,39 @@ function Fill-Nodes($coll, [string]$parentPath, [string]$root) {
     foreach ($d in $dirs) {
         if ($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
         $p = $parentPath + $d.Name + '\'
-        if (Test-Excluded $d.Name $script:fdPats) { [void]$coll.Add((New-TreeNodeFor ($d.Name + '   (durch Muster ausgeschlossen)') $p 'pattern' $root)) }
-        else { [void]$coll.Add((New-TreeNodeFor $d.Name $p 'normal' $root)) }
+        if (Test-Excluded $d.Name $script:fdPats) { $coll.Add((New-TreeNodeFor ($d.Name + '   (durch Muster ausgeschlossen)') $p 'pattern' $root)) }
+        else { $coll.Add((New-TreeNodeFor $d.Name $p 'normal' $root)) }
     }
     # abgewaehlte Ordner, die es nirgends mehr gibt
     foreach ($x in @($script:fdSet | Sort-Object)) {
         if (Test-ExistsAny $x) { continue }
         $par = Get-ParentPath $x
         $orphan = ($par -ne '') -and -not (Test-ExistsAny $par)
-        if ($parentPath -eq '' -and $orphan) { [void]$coll.Add((New-TreeNodeFor ($x.TrimEnd('\') + '   (nicht vorhanden)') $x 'missing' $root)) }
+        if ($parentPath -eq '' -and $orphan) { $coll.Add((New-TreeNodeFor ($x.TrimEnd('\') + '   (nicht vorhanden)') $x 'missing' $root)) }
         elseif ($par -eq $parentPath -and -not $orphan) {
             $name = $x.TrimEnd('\').Substring($par.Length)
-            [void]$coll.Add((New-TreeNodeFor ($name + '   (nicht vorhanden)') $x 'missing' $root))
+            $coll.Add((New-TreeNodeFor ($name + '   (nicht vorhanden)') $x 'missing' $root))
         }
     }
 }
 function Update-TreeChecks($nodes) {
     foreach ($n in $nodes) {
-        $tag = $n.Tag
-        if ($null -eq $tag) { continue }
-        $excl = ($tag.Kind -ne 'normal') -or (Test-EffExcluded $tag.Path)
+        if ($n.Kind -eq 'dummy') { continue }
+        $excl = ($n.Kind -ne 'normal') -or (Test-EffExcluded $n.Path)
         $n.Checked = -not $excl
-        $n.ForeColor = $(if ($excl) { $th.Muted } else { $th.Text })
-        if ($tag.Loaded -and $n.Nodes.Count -gt 0) { Update-TreeChecks $n.Nodes }
+        $n.Brush = $(if ($excl) { $script:br.Muted } else { $script:br.Text })
+        if ($n.Loaded -and $n.Nodes.Count -gt 0) { Update-TreeChecks $n.Nodes }
     }
 }
 function Refresh-Trees {
-    $script:fdUpdating = $true
-    try { foreach ($tv in @($script:fdTvA, $script:fdTvB)) { Update-TreeChecks $tv.Nodes } }
-    finally { $script:fdUpdating = $false }
-    $script:fdCount.Text = "$($script:fdSet.Count) Ordner abgewählt"
+    foreach ($c in @($script:fdA, $script:fdB)) { Update-TreeChecks $c }
+    $script:fdDlg.count.Text = "$($script:fdSet.Count) Ordner abgewählt"
 }
 function Remove-MissingIn($coll, [string]$path) {
     for ($i = $coll.Count - 1; $i -ge 0; $i--) {
-        $n = $coll[$i]; $tag = $n.Tag
-        if ($null -eq $tag) { continue }
-        if ($tag.Kind -eq 'missing' -and $tag.Path -ieq $path) { $coll.RemoveAt($i) }
-        elseif ($tag.Loaded -and $n.Nodes.Count -gt 0) { Remove-MissingIn $n.Nodes $path }
+        $n = $coll[$i]
+        if ($n.Kind -eq 'missing' -and $n.Path -ieq $path) { $coll.RemoveAt($i) }
+        elseif ($n.Loaded -and $n.Nodes.Count -gt 0) { Remove-MissingIn $n.Nodes $path }
     }
 }
 function Show-FolderDialog($t) {
@@ -2112,81 +1975,61 @@ function Show-FolderDialog($t) {
     $script:fdTask = $t
     $script:fdPats = Get-Patterns $t
     $script:fdSet = Get-ExcludeDirs $t
-    $script:fdUpdating = $false
-
-    $d = New-Object System.Windows.Forms.Form
-    $script:fdForm = $d
-    $d.Text = 'Ordner auswählen'; $d.ClientSize = New-Object System.Drawing.Size(1000, 680); $d.StartPosition = 'CenterParent'
-    $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false; $d.ShowInTaskbar = $false
-    $d.BackColor = $th.Surface; $d.ForeColor = $th.Text; $d.Font = $fNormal
-    $h = New-Object System.Windows.Forms.Label; $h.Text = 'Ordner auswählen'; $h.Font = $fBold; $h.AutoSize = $false; $h.TextAlign = 'MiddleLeft'
-    [void](Add-To $d $h 20 12 700 28)
-    [void](New-Label $d 20 40 960 'Haken entfernen = Ordner samt Unterordnern wird nicht synchronisiert. Neue Ordner sind standardmäßig dabei (Haken gesetzt).' $true)
-    [void](New-Label $d 20 76 470 ('A:  ' + $script:fdRootA) $true)
-    [void](New-Label $d 510 76 470 ('B:  ' + $script:fdRootB) $true)
-    $mk = {
-        param($x)
-        $tv = New-Object System.Windows.Forms.TreeView
-        $tv.CheckBoxes = $true; $tv.BorderStyle = 'FixedSingle'; $tv.BackColor = $th.Input; $tv.ForeColor = $th.Text; $tv.Font = $fNormal
-        $tv.ShowLines = $true; $tv.ItemHeight = 24; $tv.HideSelection = $false
-        [void](Add-To $d $tv $x 100 470 470)
-        return $tv
-    }
-    $script:fdTvA = & $mk 20
-    $script:fdTvB = & $mk 510
-    $script:fdHint = New-Label $d 20 580 960 '' $true
-    $script:fdCount = New-Label $d 20 604 500 '' $true
-    $bAll = New-Btn $d 20 634 210 34 'Alle wieder einschließen' $false $th.Surface
-    $bOk = New-Btn $d 770 634 100 34 'OK' $true $null
-    $bCancel = New-Btn $d 880 634 100 34 'Abbrechen' $false $th.Surface
-
-    $expand = {
+    $tree = '<TreeView x:Name="{0}" Background="Transparent" BorderThickness="0" AutomationProperties.Name="{1}"><TreeView.ItemTemplate><HierarchicalDataTemplate ItemsSource="{{Binding Nodes}}"><CheckBox IsChecked="{{Binding Checked, Mode=TwoWay}}" AutomationProperties.Name="{{Binding Text}}"><TextBlock Text="{{Binding Text}}" Foreground="{{Binding Brush}}"/></CheckBox></HierarchicalDataTemplate></TreeView.ItemTemplate></TreeView>'
+    $dlg = New-Dlg 'Ordner auswählen' 'Width="1020" Height="720" MinWidth="700" MinHeight="460"' ('<DockPanel Margin="24">
+      <TextBlock DockPanel.Dock="Top" Text="Ordner auswählen" FontSize="20" FontWeight="SemiBold"/>
+      <TextBlock DockPanel.Dock="Top" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,4,0,14" Text="Haken entfernen = Ordner samt Unterordnern wird nicht synchronisiert. Neue Ordner sind standardmäßig dabei (Haken gesetzt)."/>
+      <DockPanel DockPanel.Dock="Bottom" Margin="0,14,0,0" LastChildFill="False"><Button x:Name="all">Alle wieder einschließen</Button><TextBlock x:Name="count" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="14,0"/><Button x:Name="cancel" DockPanel.Dock="Right" IsCancel="True">Abbrechen</Button><Button x:Name="ok" DockPanel.Dock="Right" Style="{StaticResource Primary}" IsDefault="True" MinWidth="100" Margin="0,0,8,0">OK</Button></DockPanel>
+      <TextBlock x:Name="hint" DockPanel.Dock="Bottom" Style="{StaticResource MutedText}" Foreground="{DynamicResource Warn}" Margin="0,10,0,0"/>
+      <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
+        <Border Background="{DynamicResource Surface}" CornerRadius="12" Padding="12"><DockPanel><TextBlock x:Name="la" DockPanel.Dock="Top" Style="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" Margin="4,0,0,8"/>' + ($tree -f 'tvA', 'Ordner A') + '</DockPanel></Border>
+        <Border Grid.Column="2" Background="{DynamicResource Surface}" CornerRadius="12" Padding="12"><DockPanel><TextBlock x:Name="lb" DockPanel.Dock="Top" Style="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" Margin="4,0,0,8"/>' + ($tree -f 'tvB', 'Ordner B') + '</DockPanel></Border></Grid></DockPanel>')
+    $script:fdDlg = $dlg
+    $dlg.la.Text = 'A:  ' + $script:fdRootA; $dlg.lb.Text = 'B:  ' + $script:fdRootB
+    $script:fdA = [System.Collections.ObjectModel.ObservableCollection[DirToyNode]]::new()
+    $script:fdB = [System.Collections.ObjectModel.ObservableCollection[DirToyNode]]::new()
+    $dlg.tvA.ItemsSource = $script:fdA; $dlg.tvB.ItemsSource = $script:fdB
+    $expand = [System.Windows.RoutedEventHandler] {
         param($s, $e)
-        $tag = $e.Node.Tag
-        if ($null -ne $tag -and -not $tag.Loaded) {
-            $tag.Loaded = $true
-            Fill-Nodes $e.Node.Nodes $tag.Path $tag.Root
-            Refresh-Trees
-        }
+        $n = $e.OriginalSource.DataContext
+        if ($n -is [DirToyNode] -and -not $n.Loaded) { $n.Loaded = $true; Fill-Nodes $n.Nodes $n.Path $n.Root; Refresh-Trees }
     }
-    $script:fdTvA.Add_BeforeExpand($expand); $script:fdTvB.Add_BeforeExpand($expand)
-    $checked = {
+    $checked = [System.Windows.RoutedEventHandler] {
         param($s, $e)
-        if ($script:fdUpdating) { return }
-        $n = $e.Node; $tag = $n.Tag
-        if ($null -eq $tag) { return }
-        $script:fdHint.Text = ''
-        $revert = $false
-        if ($tag.Kind -eq 'pattern') { $revert = $true; $script:fdHint.Text = 'Dieser Ordner ist durch ein Muster im Ausschlussfeld ausgeschlossen.' }
-        elseif ($n.Checked -and (Test-AncExcluded $tag.Path)) { $revert = $true; $script:fdHint.Text = 'Ein übergeordneter Ordner ist abgewählt. Dort zuerst den Haken wieder setzen.' }
-        if ($revert) { $script:fdUpdating = $true; $n.Checked = -not $n.Checked; $script:fdUpdating = $false; return }
+        if ($e.OriginalSource -isnot [System.Windows.Controls.CheckBox]) { return }
+        $n = $e.OriginalSource.DataContext
+        if ($n -isnot [DirToyNode] -or $n.Kind -eq 'dummy') { return }
+        # kam die Aenderung aus dem Baum selbst (Haken passt schon zur Auswahl)? Dann nichts tun
+        if ($n.Checked -eq ($n.Kind -eq 'normal' -and -not (Test-EffExcluded $n.Path))) { return }
+        $script:fdDlg.hint.Text = ''
+        if ($n.Kind -eq 'pattern') { $n.Checked = $false; $script:fdDlg.hint.Text = 'Dieser Ordner ist durch ein Muster im Ausschlussfeld ausgeschlossen.'; return }
+        if ($n.Checked -and (Test-AncExcluded $n.Path)) { $n.Checked = $false; $script:fdDlg.hint.Text = 'Ein übergeordneter Ordner ist abgewählt. Dort zuerst den Haken wieder setzen.'; return }
         if ($n.Checked) {
-            [void]$script:fdSet.Remove($tag.Path)
-            if ($tag.Kind -eq 'missing') { Remove-MissingIn $script:fdTvA.Nodes $tag.Path; Remove-MissingIn $script:fdTvB.Nodes $tag.Path }
-        } else { [void]$script:fdSet.Add($tag.Path) }
+            [void]$script:fdSet.Remove($n.Path)
+            if ($n.Kind -eq 'missing') { Remove-MissingIn $script:fdA $n.Path; Remove-MissingIn $script:fdB $n.Path }
+        } else { [void]$script:fdSet.Add($n.Path) }
         Refresh-Trees
     }
-    $script:fdTvA.Add_AfterCheck($checked); $script:fdTvB.Add_AfterCheck($checked)
-    $bAll.Add_Click({
+    foreach ($tv in $dlg.tvA, $dlg.tvB) {
+        $tv.AddHandler([System.Windows.Controls.TreeViewItem]::ExpandedEvent, $expand)
+        $tv.AddHandler([System.Windows.Controls.Primitives.ToggleButton]::CheckedEvent, $checked)
+        $tv.AddHandler([System.Windows.Controls.Primitives.ToggleButton]::UncheckedEvent, $checked)
+    }
+    $dlg.all.Add_Click({
         $script:fdSet.Clear()
-        Fill-Nodes $script:fdTvA.Nodes '' $script:fdRootA; Fill-Nodes $script:fdTvB.Nodes '' $script:fdRootB
+        Fill-Nodes $script:fdA '' $script:fdRootA; Fill-Nodes $script:fdB '' $script:fdRootB
         Refresh-Trees
     })
-    $bOk.Add_Click({
+    $dlg.ok.Add_Click({
         $script:fdTask.ExcludeDirs = [string[]]@($script:fdSet | Sort-Object)
         Save-Tasks
-        $script:fdForm.DialogResult = 'OK'
+        $script:fdDlg.Win.Close()
     })
-    $bCancel.Add_Click({ $script:fdForm.DialogResult = 'Cancel' })
-    $d.Add_HandleCreated({
-        try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($script:fdForm.Handle, 20, [ref]$v, 4) } catch { }
-    })
-
-    Fill-Nodes $script:fdTvA.Nodes '' $script:fdRootA
-    Fill-Nodes $script:fdTvB.Nodes '' $script:fdRootB
+    $dlg.cancel.Add_Click({ $script:fdDlg.Win.Close() })
+    Fill-Nodes $script:fdA '' $script:fdRootA
+    Fill-Nodes $script:fdB '' $script:fdRootB
     Refresh-Trees
-    [void]$d.ShowDialog($form)
-    $d.Dispose()
+    Show-Dlg $dlg
 }
 # ---- Ablauf: Aufgabenliste, Bearbeiten, Starten
 $script:modeHelp = @('A und B werden gleich: neuere Datei gewinnt, Löschungen werden übernommen.', 'B wird exakt wie A. Was nur in B liegt, wird gelöscht.', 'Neues und Geändertes von A nach B. Es wird nichts gelöscht.')

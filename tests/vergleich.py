@@ -5,7 +5,7 @@ import os, random, re, shutil, subprocess, sys, tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 alt = sys.argv[1]; anzahl = int(sys.argv[2]) if len(sys.argv) > 2 else 12
 neu = sys.argv[3] if len(sys.argv) > 3 else os.path.join(ROOT, 'DirToy.ps1')
-tmp = tempfile.mkdtemp(prefix='dirtoy-vgl-')
+tmp = tempfile.mkdtemp(prefix='dirtoy-vgl-', dir=os.environ.get('DIRTOY_TEST_B') or None)
 if os.path.exists(alt):
     code_alt = open(alt, 'rb').read()
 else:

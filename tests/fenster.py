@@ -28,12 +28,6 @@ def wait(pid, title, sec=20, gone=False):
         if m and not gone: time.sleep(0.6); return m[0]
         time.sleep(0.1)
     raise SystemExit(f'Fenster: {title} gone={gone}, da: {[text(h) for h in tops(pid)]}')
-def child(h, t):
-    r = []
-    u.EnumChildWindows(h, CB(lambda c, _: (r.append(c) if text(c) == t else None) or True), 0)
-    if not r: raise SystemExit('kein Knopf ' + t)
-    return r[0]
-def click(h, t): u.PostMessageW(child(h, t), 0x00F5, 0, 0)
 def key(h, k): u.PostMessageW(h, 0x0100, k, 0); u.PostMessageW(h, 0x0101, k, 0)
 def shot(h, name):
     if not out: return
@@ -47,16 +41,18 @@ def shot(h, name):
     Image.frombuffer('RGB', (w, hh), d, 'raw', 'BGRX', 0, 1).save(os.path.join(out, name))
 # ---- Hauptfenster (WPF) ueber UI Automation
 _uia = None
-def uia(op, h, id, value=None):
+def uia(op, h, id, value=None, byname=False, index=0):
     global _uia
     if _uia is None:
         _uia = subprocess.Popen(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uia.ps1')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding='utf-8', creationflags=0x08000000)
         _uia.stdout.readline()
         import atexit; atexit.register(_uia.kill)
-    _uia.stdin.write(json.dumps(dict(op=op, hwnd=h, id=id, value=value)) + '\n'); _uia.stdin.flush()
+    _uia.stdin.write(json.dumps(dict(op=op, hwnd=h, id=id, value=value, byname=byname, index=index)) + '\n'); _uia.stdin.flush()
     r = json.loads(_uia.stdout.readline())
     if not r['ok']: raise SystemExit(f'UIA {op} {id}: {r["error"]}')
     return r
 def mklick(h, id):
     if not uia('click', h, id)['found']: raise SystemExit('nicht gefunden: ' + id)
 def mstatus(h): return uia('get', h, 'lblStatus').get('name', '')
+def click(h, t):   # Knopf oder Haekchen nach Beschriftung
+    if not uia('click', h, t, byname=True)['found']: raise SystemExit('kein Knopf ' + t)

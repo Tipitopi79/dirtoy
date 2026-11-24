@@ -1,4 +1,5 @@
 # Fenstertest fuer den Lauf: Abbrechen, Schliessen, Rueckfragen, Vorschau, Fehler, Aenderungen waehrend des Laufs.
+# Ordner B woanders (z. B. auf einem NAS): Umgebungsvariable DIRTOY_TEST_B=<ordner>; dort wird nur ein eigener Unterordner benutzt.
 # Start: python tests/test-ablauf.py        braucht voruebergehend rund 3 GB im Temp-Ordner
 import ctypes, json, os, shutil, subprocess, sys, tempfile, time
 from fenster import *
@@ -9,7 +10,9 @@ def check(n, c):
 def dateien(d): return sorted(os.path.relpath(os.path.join(o, f), d) for o, _, fs in os.walk(d) for f in fs)
 def texte(m):
     r = []; u.EnumChildWindows(m, CB(lambda c, _: (r.append(text(c)) or True)), 0); return r
+GEDULD = 6 if os.environ.get('DIRTOY_TEST_B') else 1   # Netzlaufwerke sind langsamer
 def bis(f, sec, was):
+    sec *= GEDULD
     end = time.time() + sec
     while time.time() < end:
         if f(): return time.time() - (end - sec)
@@ -23,9 +26,10 @@ def kinder(m):
 class Lauf:
     def __init__(self, n=1):
         self.d = tempfile.mkdtemp(prefix='dirtoy-abl-'); self.D = os.path.join(self.d, 'daten'); os.mkdir(self.D)
+        self.n = tempfile.mkdtemp(prefix='dirtoy-abl-', dir=os.environ['DIRTOY_TEST_B']) if os.environ.get('DIRTOY_TEST_B') else self.d
         self.paare = []
         for i in range(n):
-            A, B = (os.path.join(self.d, f'{s}{i}') for s in 'AB'); os.mkdir(A); os.mkdir(B); self.paare.append((A, B))
+            A, B = os.path.join(self.d, f'A{i}'), os.path.join(self.n, f'B{i}'); os.mkdir(A); os.mkdir(B); self.paare.append((A, B))
         self.A, self.B = self.paare[0]; self.p = None
     def start(self, modi=(0,), ergebnis=False):
         self.ids = [str(i) * 32 for i in range(len(self.paare))]
@@ -39,7 +43,7 @@ class Lauf:
         f = os.path.join(self.D, 'state', self.ids[i] + '.state'); return set(open(f, encoding='utf-8').read().splitlines()) if os.path.exists(f) else None
     def log(self):
         f = os.path.join(self.D, 'sync.log'); return open(f, encoding='utf-8-sig').read() if os.path.exists(f) else ''
-    def tmp(self): return [f for f in dateien(self.d) if f.endswith('.dirtoy-tmp')]
+    def tmp(self): return [f for f in dateien(self.d) + (dateien(self.n) if self.n != self.d else []) if f.endswith('.dirtoy-tmp')]
     def zu(self):
         u.PostMessageW(self.m, 0x0010, 0, 0)
     def __enter__(self): return self
@@ -47,6 +51,7 @@ class Lauf:
         if os.path.exists(os.path.join(self.D, 'fehler.log')): check('fehler.log: ' + open(os.path.join(self.D, 'fehler.log'), encoding='utf-8-sig').read()[:600], False)
         if self.p and self.p.poll() is None: self.p.kill(); self.p.wait()
         shutil.rmtree(self.d, ignore_errors=True)
+        if self.n != self.d: shutil.rmtree(self.n, ignore_errors=True)
 def viele(d, n):
     for i in range(n):
         o = os.path.join(d, f'o{i % 10}'); os.makedirs(o, exist_ok=True); open(os.path.join(o, f'f{i:05}.txt'), 'w').write('x' * 2000)
@@ -61,7 +66,7 @@ with Lauf() as l:
     bis(lambda: len(dateien(l.B)) > 60, 30, 'Lauf beginnt')
     check('Abbrechen-Knopf sichtbar, Synchronisieren nicht', knopf_sichtbar(l.m, 'btnCancel') and not knopf_sichtbar(l.m, 'btnRun'))
     l.klick('Abbrechen'); t = l.status('Abgebrochen.', 10); n = dateien(l.B)
-    check(f'abgebrochen nach {t:.1f} s bei {len(n)} Dateien', t < 5 and 60 < len(n) < 2500)
+    check(f'abgebrochen nach {t:.1f} s bei {len(n)} Dateien', t < 5 * GEDULD and 60 < len(n) < 2500)
     time.sleep(1); check('danach laeuft nichts weiter', dateien(l.B) == n)
     check('keine Zwischendateien', not l.tmp())
     st = {x for x in l.stand() if not x.endswith('\\')}; check('Stand = genau die kopierten Dateien', st == set(n))
@@ -123,7 +128,7 @@ print('== Reaktion des Fensters waehrend des Laufs')
 with Lauf() as l:
     viele(l.A, 2000); gross(os.path.join(l.A, 'gross.bin'), 600); l.start(); l.klick('Synchronisieren'); bis(lambda: dateien(l.B), 30, 'Lauf beginnt'); w = []
     t0 = time.time()
-    while len(dateien(l.B)) < 2001 and time.time() - t0 < 60:
+    while len(dateien(l.B)) < 2001 and time.time() - t0 < 60 * GEDULD:
         for _ in range(20): w.append(antwort(l.m)); time.sleep(0.005)
     l.status('Fertig.')
     w.sort(); print(f'   {len(w)} Proben, 99% unter {w[int(len(w) * .99)] * 1000:.0f} ms, laengste {w[-1] * 1000:.0f} ms')

@@ -1,33 +1,4 @@
 ﻿# ---- Hauptfenster (WPF)
-if (-not ('DirToyRow' -as [type])) {
-    Add-Type -ReferencedAssemblies PresentationCore, PresentationFramework, WindowsBase, System.Xaml, System.Windows.Forms -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Windows.Media;
-public class DirToyItem : INotifyPropertyChanged {
-    public event PropertyChangedEventHandler PropertyChanged;
-    protected void Raise(string n) { if (PropertyChanged != null) PropertyChanged(this, new PropertyChangedEventArgs(n)); }
-}
-public class DirToyRow : DirToyItem {
-    string st; Brush br;
-    public string Icon { get; set; } public Brush IconBrush { get; set; }
-    public string Aktion { get; set; } public string Datei { get; set; } public string File { get; set; }
-    public string Status { get { return st; } set { st = value; Raise("Status"); } }
-    public Brush StatusBrush { get { return br; } set { br = value; Raise("StatusBrush"); } }
-}
-public class DirToyTask : DirToyItem {
-    string n, s; Brush d;
-    public string Id { get; set; }
-    public string Name { get { return n; } set { n = value; Raise("Name"); } }
-    public string Sub { get { return s; } set { s = value; Raise("Sub"); } }
-    public Brush Dot { get { return d; } set { d = value; Raise("Dot"); } }
-    public override string ToString() { return n; }
-}
-public class DirToyOwner : System.Windows.Forms.IWin32Window {
-    public IntPtr H; public IntPtr Handle { get { return H; } }
-}
-'@
-}
 $script:xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:sys="clr-namespace:System;assembly=mscorlib"
         Width="1120" Height="780" MinWidth="900" MinHeight="660" WindowStartupLocation="CenterScreen"
@@ -35,104 +6,7 @@ $script:xaml = @'
         UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
   <Window.TaskbarItemInfo><TaskbarItemInfo x:Name="task"/></Window.TaskbarItemInfo>
   <Window.Resources>
-    <sys:Double x:Key="{x:Static SystemParameters.VerticalScrollBarButtonHeightKey}">72</sys:Double>
-    <Style x:Key="Icon" TargetType="TextBlock">
-      <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/><Setter Property="VerticalAlignment" Value="Center"/><Setter Property="FontSize" Value="15"/><Setter Property="TextOptions.TextRenderingMode" Value="Grayscale"/>
-    </Style>
-    <Style x:Key="MutedText" TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource Muted}"/><Setter Property="FontSize" Value="12"/></Style>
-    <Style TargetType="Button">
-      <Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Background" Value="Transparent"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource Border}"/><Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="16,0"/><Setter Property="Height" Value="38"/><Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-        <Grid>
-          <Border x:Name="b" CornerRadius="8" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"/>
-          <Border x:Name="h" CornerRadius="8" Background="{DynamicResource Text}" Opacity="0"/>
-          <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" RecognizesAccessKey="False"/>
-        </Grid>
-        <ControlTemplate.Triggers>
-          <Trigger Property="IsMouseOver" Value="True">
-            <Trigger.EnterActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="h" Storyboard.TargetProperty="Opacity" To="0.10" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></Trigger.EnterActions>
-            <Trigger.ExitActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="h" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.2"/></Storyboard></BeginStoryboard></Trigger.ExitActions>
-          </Trigger>
-          <Trigger Property="IsPressed" Value="True"><Setter TargetName="b" Property="Opacity" Value="0.75"/></Trigger>
-          <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/><Setter Property="Cursor" Value="Arrow"/></Trigger>
-        </ControlTemplate.Triggers>
-      </ControlTemplate></Setter.Value></Setter>
-    </Style>
-    <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-      <Setter Property="Background" Value="{DynamicResource Accent}"/><Setter Property="Foreground" Value="{DynamicResource AccentText}"/>
-      <Setter Property="BorderThickness" Value="0"/><Setter Property="FontWeight" Value="SemiBold"/>
-    </Style>
-    <Style x:Key="Ghost" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-      <Setter Property="BorderThickness" Value="0"/><Setter Property="Padding" Value="10,0"/><Setter Property="HorizontalContentAlignment" Value="Left"/>
-    </Style>
-    <Style TargetType="TextBox">
-      <Setter Property="Background" Value="{DynamicResource Input}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="CaretBrush" Value="{DynamicResource Text}"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource Border}"/><Setter Property="Height" Value="34"/><Setter Property="SelectionBrush" Value="{DynamicResource Accent}"/>
-      <Setter Property="VerticalContentAlignment" Value="Center"/><Setter Property="Padding" Value="8,0"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox">
-        <Border x:Name="b" CornerRadius="8" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
-          <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" VerticalAlignment="Center"/></Border>
-        <ControlTemplate.Triggers>
-          <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="b" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
-          <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
-        </ControlTemplate.Triggers>
-      </ControlTemplate></Setter.Value></Setter>
-    </Style>
-    <Style x:Key="Seg" TargetType="RadioButton">
-      <Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
-        <Border x:Name="b" CornerRadius="6" Background="Transparent" Padding="14,0" Height="30" Margin="3">
-          <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Center"/></Border>
-        <ControlTemplate.Triggers>
-          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource SelBg}"/></Trigger>
-          <Trigger Property="IsChecked" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource Accent}"/><Setter Property="Foreground" Value="{DynamicResource AccentText}"/></Trigger>
-          <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
-        </ControlTemplate.Triggers>
-      </ControlTemplate></Setter.Value></Setter>
-    </Style>
-    <Style TargetType="ScrollBar">
-      <Setter Property="Background" Value="Transparent"/><Setter Property="Width" Value="10"/><Setter Property="MinWidth" Value="10"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollBar">
-        <Track x:Name="PART_Track" Orientation="Vertical" IsDirectionReversed="True"><Track.Thumb><Thumb MinHeight="36"><Thumb.Template><ControlTemplate TargetType="Thumb">
-          <Border CornerRadius="4" Margin="2" Background="{DynamicResource Border}"/></ControlTemplate></Thumb.Template></Thumb></Track.Thumb></Track>
-      </ControlTemplate></Setter.Value></Setter>
-      <Style.Triggers><Trigger Property="Orientation" Value="Horizontal"><Setter Property="Width" Value="Auto"/><Setter Property="Height" Value="10"/>
-        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollBar">
-          <Track x:Name="PART_Track"><Track.Thumb><Thumb MinWidth="36"><Thumb.Template><ControlTemplate TargetType="Thumb"><Border CornerRadius="4" Margin="2" Background="{DynamicResource Border}"/></ControlTemplate></Thumb.Template></Thumb></Track.Thumb></Track>
-        </ControlTemplate></Setter.Value></Setter></Trigger></Style.Triggers>
-    </Style>
-    <Style TargetType="ToolTip"><Setter Property="Background" Value="{DynamicResource Surface}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="BorderBrush" Value="{DynamicResource Border}"/></Style>
-    <Style x:Key="PlainList" TargetType="ListBox">
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBox"><Grid x:Name="g"><ScrollViewer Focusable="False"><ItemsPresenter/></ScrollViewer></Grid>
-        <ControlTemplate.Triggers><Trigger Property="IsEnabled" Value="False"><Setter TargetName="g" Property="Opacity" Value="0.6"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
-    </Style>
-    <Style TargetType="ListBoxItem">
-      <Setter Property="Foreground" Value="{DynamicResource Text}"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
-        <Border x:Name="b" CornerRadius="8" Padding="12,9" Margin="0,1" Background="Transparent"><ContentPresenter/></Border>
-        <ControlTemplate.Triggers>
-          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource SelBg}"/></Trigger>
-          <Trigger Property="IsSelected" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource SelBg}"/></Trigger>
-        </ControlTemplate.Triggers>
-      </ControlTemplate></Setter.Value></Setter>
-    </Style>
-    <Style TargetType="ListViewItem">
-      <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Foreground" Value="{DynamicResource Text}"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListViewItem">
-        <Border x:Name="b" Background="Transparent" Padding="6,5" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,0.5"><GridViewRowPresenter VerticalAlignment="Center"/></Border>
-        <ControlTemplate.Triggers>
-          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource Hover}"/></Trigger>
-          <Trigger Property="IsSelected" Value="True"><Setter TargetName="b" Property="Background" Value="{DynamicResource SelBg}"/></Trigger>
-        </ControlTemplate.Triggers>
-      </ControlTemplate></Setter.Value></Setter>
-    </Style>
-    <Style TargetType="GridViewColumnHeader">
-      <Setter Property="Foreground" Value="{DynamicResource Muted}"/><Setter Property="FontSize" Value="12"/><Setter Property="HorizontalContentAlignment" Value="Left"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="GridViewColumnHeader">
-        <Border Background="Transparent" Padding="12,7"><ContentPresenter/></Border></ControlTemplate></Setter.Value></Setter>
-    </Style>
+@@STILE@@
   </Window.Resources>
   <Grid x:Name="root" Background="{DynamicResource Bg}">
     <Grid.ColumnDefinitions><ColumnDefinition Width="250"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -233,20 +107,13 @@ $script:xaml = @'
     </Grid>
   </Grid>
 </Window>
-'@
+'@.Replace('@@STILE@@', $script:styles)
 $script:win = [System.Windows.Markup.XamlReader]::Parse($script:xaml)
 $win = $script:win
 $script:ui = @{}
 foreach ($m in [regex]::Matches($script:xaml, 'x:Name="(\w+)"')) { $n = $m.Groups[1].Value; $e = $win.FindName($n); if ($e) { $script:ui[$n] = $e } }
 $ui = $script:ui
-# Farben des Designs als Ressourcen
-$script:br = @{}
-foreach ($k in $th.Keys) {
-    $c = $th[$k]; $b = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromRgb($c.R, $c.G, $c.B)); $b.Freeze()
-    $script:br[$k] = $b; $win.Resources[$k] = $b
-}
-$b = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromArgb(14, $th.Text.R, $th.Text.G, $th.Text.B)); $b.Freeze(); $win.Resources['Hover'] = $b
-$b = [System.Windows.Media.SolidColorBrush]::new($(if ($isDark) { [System.Windows.Media.Color]::FromRgb(0xFF, 0xB9, 0x00) } else { [System.Windows.Media.Color]::FromRgb(0x9D, 0x5D, 0x00) })); $b.Freeze(); $script:br['Warn'] = $b
+Set-Brushes $win
 $win.Title = "DirToy $($script:version)"
 $ico = Get-AppIcon
 if ($ico) { $win.Icon = [System.Windows.Interop.Imaging]::CreateBitmapSourceFromHIcon($ico.Handle, [System.Windows.Int32Rect]::Empty, [System.Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions()) }
@@ -255,14 +122,9 @@ $ui.lblTheme.Text = @{ auto = 'Design: Automatisch'; hell = 'Design: Hell'; dunk
 # $form: Besitzer fuer die Dialoge
 $script:form = New-Object DirToyOwner
 $form = $script:form
-try {
-    Add-Type -Namespace Win32 -Name Dwm -MemberDefinition '[System.Runtime.InteropServices.DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(System.IntPtr hwnd, int attr, ref int val, int size);'
-} catch { }
-$win.Add_SourceInitialized({
-    $form.H = (New-Object System.Windows.Interop.WindowInteropHelper $win).Handle
-    try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute($form.H, 20, [ref]$v, 4) } catch { }
-})
-$script:updTimer = New-Object System.Windows.Forms.Timer; $script:updTimer.Interval = 300
+$win.Add_SourceInitialized({ $form.H = (New-Object System.Windows.Interop.WindowInteropHelper $win).Handle })
+Set-DarkTitle $win
+$script:updTimer = New-Object System.Windows.Threading.DispatcherTimer; $script:updTimer.Interval = [TimeSpan]::FromMilliseconds(300)
 $script:updTimer.Add_Tick({ if ($script:updTask -and $script:updTask.IsCompleted) { Finish-UpdateCheck } })
 
 # Liste der Aktionen
@@ -279,8 +141,8 @@ function Set-ListSort([string]$col, [bool]$asc) {
 foreach ($h in $ui.h0, $ui.h1, $ui.h2) {
     $h.Add_Click({ if (-not $script:busy) { $c = [string]$this.Tag; Set-ListSort $c $(if ($script:sortCol -eq $c) { -not $script:sortAsc } else { $true }) } })
 }
-function Copy-Rows([bool]$all) {
-    $items = if ($all) { @($ui.lv.Items) } else { @($ui.lv.Items | Where-Object { $ui.lv.SelectedItems.Contains($_) }) }
+function Copy-Rows([bool]$all, $list = $ui.lv) {
+    $items = if ($all) { @($list.Items) } else { @($list.Items | Where-Object { $list.SelectedItems.Contains($_) }) }
     if ($items.Count -eq 0) { return }
     $sb = New-Object System.Text.StringBuilder
     foreach ($r in $items) { [void]$sb.AppendLine("$($r.Aktion)`t$($r.Datei)`t$($r.Status)") }
