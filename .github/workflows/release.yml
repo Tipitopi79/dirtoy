@@ -20,6 +20,8 @@ jobs:
           VER="${GITHUB_REF_NAME#v}"
           mkdir "DirToy-$VER"
           cp DirToy.ps1 DirToy.cmd DirToy.ico README.md LICENSE "DirToy-$VER/"
+          # Repo speichert LF, Windows-Nutzer bekommen CRLF
+          sed -i 's/$/\r/' "DirToy-$VER/DirToy.ps1" "DirToy-$VER/DirToy.cmd" "DirToy-$VER/README.md" "DirToy-$VER/LICENSE"
           zip -r "DirToy-$VER.zip" "DirToy-$VER"
 
       - name: Release anlegen
