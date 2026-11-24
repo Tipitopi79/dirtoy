@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.7.3'
+$script:version = '1.7.4'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -158,7 +158,12 @@ function Test-Excluded([string]$name, $pats) {
 function New-DirSet { New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase) }
 function Scan-Dir([System.IO.DirectoryInfo]$dir, [string]$rel, $pats, $dict, $dirs) {
     try { $entries = $dir.GetFileSystemInfos() }
-    catch { $script:warn.Add("$($dir.FullName): $($_.Exception.Message)"); return }
+    catch {
+        # Nicht lesbar heisst nicht "leer": sonst wuerde der Inhalt auf der anderen Seite geloescht
+        if ($rel -eq '') { throw "Ordner nicht lesbar, es wurde nichts verändert: $($dir.FullName) ($($_.Exception.Message))" }
+        [void]$script:unread.Add($rel)
+        $script:warn.Add("$($dir.FullName): nicht lesbar, auf beiden Seiten wird hier nichts verändert ($($_.Exception.Message))"); return
+    }
     foreach ($e in $entries) {
         $script:scanCount++
         if (($script:scanCount % 300) -eq 0) {
@@ -172,7 +177,7 @@ function Scan-Dir([System.IO.DirectoryInfo]$dir, [string]$rel, $pats, $dict, $di
         }
         if (Test-Excluded $e.Name $pats) { continue }
         if ($e -is [System.IO.DirectoryInfo]) {
-            if ($e.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+            if ($e.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { [void]$script:unread.Add($rel + $e.Name + '\'); continue }   # Verknuepfung: nicht eingelesen, also auch nichts ableiten
             if ($script:exDirs -and $script:exDirs.Contains($rel + $e.Name + '\')) { continue }   # im Ordnerbaum abgewaehlt
             if ($dirs) { [void]$dirs.Add($rel + $e.Name + '\') }
             Scan-Dir $e ($rel + $e.Name + '\') $pats $dict $dirs
@@ -180,6 +185,11 @@ function Scan-Dir([System.IO.DirectoryInfo]$dir, [string]$rel, $pats, $dict, $di
             $dict[$rel + $e.Name] = $e
         }
     }
+}
+# Liegt der Eintrag in (oder ist er selbst) ein Ordner, der auf einer Seite nicht eingelesen werden konnte?
+function Test-Unread([string]$rel, $unread) {
+    foreach ($u in $unread) { if ($rel.StartsWith($u, [StringComparison]::OrdinalIgnoreCase)) { return $true } }
+    return $false
 }
 function Get-ExcludeDirs($t) {
     $set = New-DirSet
@@ -203,6 +213,7 @@ function Build-Plan($t) {
     $script:tmpFiles = New-Object System.Collections.Generic.List[string]
     $exDirs = Get-ExcludeDirs $t; $script:exDirs = $exDirs
     $script:scanCount = 0; $script:inPlan = $true
+    $unread = New-DirSet; $script:unread = $unread
     try {
         Scan-Dir (New-Object System.IO.DirectoryInfo $rootA) '' $pats $da $dsA
         Scan-Dir (New-Object System.IO.DirectoryInfo $rootB) '' $pats $db $dsB
@@ -226,6 +237,7 @@ function Build-Plan($t) {
             Pump
             if ($script:cancel) { throw 'DIRTOY_CANCEL' }
         }
+        if ($unread.Count -and (Test-Unread $rel $unread)) { continue }
         $fa = $null; $fb = $null
         $inA = $da.TryGetValue($rel, [ref]$fa)
         $inB = $db.TryGetValue($rel, [ref]$fb)
@@ -273,6 +285,7 @@ function Build-Plan($t) {
     $mk = New-Object System.Collections.Generic.List[object]
     $rm = New-Object System.Collections.Generic.List[object]
     foreach ($dk in $dkeys) {
+        if ($unread.Count -and (Test-Unread $dk $unread)) { continue }
         $inA = $dsA.Contains($dk); $inB = $dsB.Contains($dk)
         if ($inA -and $inB) { continue }
         if ($implicit.Contains($dk)) { continue }
@@ -297,6 +310,8 @@ function Build-Plan($t) {
     $both = New-DirSet
     foreach ($k in $da.Keys) { if ($db.ContainsKey($k)) { [void]$both.Add($k) } }
     foreach ($k in $dsA) { if ($dsB.Contains($k)) { [void]$both.Add($k) } }
+    # Nicht eingelesene Bereiche behalten ihren alten Stand
+    if ($unread.Count) { foreach ($k in $state) { if (Test-Unread $k $unread) { [void]$both.Add($k) } } }
     return [pscustomobject]@{ Plan = $final; A = $rootA; B = $rootB; Pats = $pats; ExDirs = $exDirs; Both = $both; State = $state }
 }
 

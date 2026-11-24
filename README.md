@@ -3,7 +3,7 @@
 Grafisches Tool für Windows, das zwei Ordner synchron hält – inspiriert von SyncToy.
 Geschrieben in PowerShell (WinForms), ohne Installation lauffähig.
 
-![Version](https://img.shields.io/badge/version-1.7.3-blue) ![Lizenz](https://img.shields.io/badge/lizenz-MIT-green)
+![Version](https://img.shields.io/badge/version-1.7.4-blue) ![Lizenz](https://img.shields.io/badge/lizenz-MIT-green)
 
 ## Funktionen
 
