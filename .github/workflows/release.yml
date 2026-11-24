@@ -1,0 +1,31 @@
+name: Release
+
+# Beim Push eines Tags v* (z. B. v1.7.4) wird ein GitHub-Release mit ZIP angelegt.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ZIP bauen
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir "DirToy-$VER"
+          cp DirToy.ps1 DirToy.cmd DirToy.ico README.md LICENSE "DirToy-$VER/"
+          zip -r "DirToy-$VER.zip" "DirToy-$VER"
+
+      - name: Release anlegen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" "DirToy-$VER.zip" \
+            --title "DirToy $VER" --generate-notes
