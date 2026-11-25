@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '1.7.6'
+$script:version = '2.0.0'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150

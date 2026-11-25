@@ -191,12 +191,22 @@ function Set-DarkTitle($w) {
         try { $v = if ($isDark) { 1 } else { 0 }; [void][Win32.Dwm]::DwmSetWindowAttribute((New-Object System.Windows.Interop.WindowInteropHelper $this).Handle, 20, [ref]$v, 4) } catch { }
     })
 }
+# Kein Fenster groesser als der Bildschirm (hohe Skalierung, kleine Notebooks); Einheiten sind schon skaliert
+function Get-WorkSize { return [System.Windows.SystemParameters]::WorkArea.Size }
+function Limit-Window($w) {
+    $a = Get-WorkSize
+    $w.MinHeight = [math]::Min($w.MinHeight, $a.Height); $w.MinWidth = [math]::Min($w.MinWidth, $a.Width)
+    if ($w.SizeToContent -eq 'Height') { $w.MaxHeight = [math]::Min($w.MaxHeight, $a.Height) } else { $w.Height = [math]::Min($w.Height, $a.Height) }
+    $w.Width = [math]::Min($w.Width, $a.Width)
+}
 $script:winStack = New-Object System.Collections.ArrayList   # offene Dialoge, der oberste ist Besitzer des naechsten
 # Baut einen Dialog; Rueckgabe: Tabelle mit Win und allen benannten Elementen. $size: z. B. 'Width="520" SizeToContent="Height" ResizeMode="NoResize"'
 function New-Dlg([string]$title, [string]$size, [string]$body) {
+    if ($body.StartsWith('<StackPanel')) { $body = '<ScrollViewer VerticalScrollBarVisibility="Auto">' + $body + '</ScrollViewer>' }   # falls der Bildschirm zu klein ist
     $x = '<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:sys="clr-namespace:System;assembly=mscorlib" ' + $size +
         ' ShowInTaskbar="False" FontFamily="Segoe UI" FontSize="14" Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}" UseLayoutRounding="True" TextOptions.TextFormattingMode="Display"><Window.Resources>' + $script:styles + '</Window.Resources>' + $body + '</Window>'
     $w = [System.Windows.Markup.XamlReader]::Parse($x)
+    Limit-Window $w
     $w.Title = $title
     if ($script:win.Icon) { $w.Icon = $script:win.Icon }
     Set-Brushes $w; Set-DarkTitle $w

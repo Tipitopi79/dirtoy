@@ -30,6 +30,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                 'set' { $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue([string]$c.value) }
             }
             $r.name = $e.Current.Name; $r.enabled = $e.Current.IsEnabled; $r.visible = -not $e.Current.IsOffscreen
+            $b = $e.Current.BoundingRectangle; if (-not $b.IsEmpty) { $r.rect = @($b.Left, $b.Top, $b.Right, $b.Bottom) }
             if ($e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$p)) { $r.on = ($p.Current.ToggleState -eq 'On') }
             if ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$p)) { $r.on = $p.Current.IsSelected }
             if ($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$p)) { $r.value = $p.Current.Value }

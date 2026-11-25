@@ -110,6 +110,7 @@ $script:xaml = @'
 '@.Replace('@@STILE@@', $script:styles)
 $script:win = [System.Windows.Markup.XamlReader]::Parse($script:xaml)
 $win = $script:win
+Limit-Window $win
 $script:ui = @{}
 foreach ($m in [regex]::Matches($script:xaml, 'x:Name="(\w+)"')) { $n = $m.Groups[1].Value; $e = $win.FindName($n); if ($e) { $script:ui[$n] = $e } }
 $ui = $script:ui

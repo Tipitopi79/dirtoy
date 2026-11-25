@@ -1,9 +1,13 @@
 # DirToy
 
 Grafisches Tool für Windows, das zwei Ordner synchron hält – inspiriert von SyncToy.
-Geschrieben in PowerShell (WinForms), ohne Installation lauffähig.
+Geschrieben in PowerShell (WPF), ohne Installation lauffähig.
 
-![Version](https://img.shields.io/badge/version-1.7.6-blue) ![Lizenz](https://img.shields.io/badge/lizenz-MIT-green)
+![Version](https://img.shields.io/badge/version-2.0.0-blue) ![Lizenz](https://img.shields.io/badge/lizenz-MIT-green)
+
+| Dunkel | Hell |
+|---|---|
+| ![DirToy im dunklen Design](docs/dunkel.png) | ![DirToy im hellen Design](docs/hell.png) |
 
 ## Funktionen
 
@@ -15,10 +19,11 @@ Geschrieben in PowerShell (WinForms), ohne Installation lauffähig.
 - **Ausschlussfeld**: Dateinamen und Muster mit `;` getrennt, z. B. `Thumbs.db;*.tmp;node_modules`
 - **Vorschau** zeigt, was passieren würde, ohne etwas zu verändern. Bei sehr vielen Aktionen (mehr als 2000) öffnet ein Doppelklick auf die letzte Zeile die komplette Liste als CSV-Datei (Excel: filtern, sortieren), die Summen je Aktion stehen schon in der Liste
 - **Ergebnis-Fenster** nach jedem manuellen Lauf (wie bei SyncToy): Zusammenfassung je Aktion, Fehler, Dauer, Datenmenge und die einzelnen Aktionen, sortierbar per Klick auf den Spaltenkopf und kopierbar (Strg+C); komplette Liste als CSV. Auch die Liste im Hauptfenster lässt sich sortieren und kopieren
+- **Animation zwischen den Ordnern** zeigt, in welche Richtung gerade gearbeitet wird. Der Lauf hat einen eigenen Thread, das Fenster bleibt dabei bedienbar
 - **Fortschrittsbalken** und **Protokoll** (Liste im Fenster und `sync.log`)
 - **Zeitpläne** direkt im Tool: legt Einträge im Windows-Aufgabenplaner an, ändert und entfernt sie. Auch Intervalle wie "täglich ab 08:00 alle 20 Minuten für 10 Stunden" (verpasste Intervalle werden nicht nachgeholt). DirToy prüft nach dem Anlegen, ob der Eintrag wirklich existiert; klappt es nicht (z. B. ohne Administratorrechte), zeigt es eine Anleitung zum manuellen Anlegen
 - Windows-**Benachrichtigung** nach automatischen Läufen
-- **Update-Hinweis**: DirToy sucht beim Start bei GitHub nach einem neueren Release (abschaltbar). Der Button "Update verfügbar" bietet "Jetzt aktualisieren" (lädt, prüft und ersetzt `DirToy.ps1`, die alte Datei bleibt als Sicherung) oder die Release-Seite im Browser
+- **Update-Hinweis**: DirToy sucht beim Start bei GitHub nach einem neueren Release (abschaltbar). Der Button "Update verfügbar" bietet "Jetzt aktualisieren" (lädt, prüft und ersetzt `DirToy.ps1`, die alte Datei bleibt als Sicherung) oder die Release-Seite im Browser. Ab 2.0 werden nur Updates mit gültiger Signatur des Entwicklers installiert
 - **Hell- und Dunkel-Design**: automatisch wie Windows oder fest einstellbar (Button "Design")
 
 ## Voraussetzungen
@@ -34,7 +39,7 @@ Das Programm-Icon ist in `DirToy.ps1` eingebaut (Fenster, Taskleiste, Benachrich
 
 Beim ersten Start wird der Ordner `DirToy-Daten` angelegt (Aufgaben, Zeitpläne, Protokoll). Darf DirToy neben dem Programm nicht schreiben (z. B. in `C:\Program Files` ohne Administratorrechte), legt es die Daten automatisch unter `%APPDATA%\DirToy` ab. Die automatische Update-Funktion ersetzt `DirToy.ps1` und braucht dort Schreibrechte; ohne sie über die Release-Seite aktualisieren.
 Wurde die ZIP-Datei aus dem Internet geladen, ggf. vorher in den Dateieigenschaften "Zulassen" anhaken.
-Die Skripte sind nicht signiert, Windows kann daher eine Warnung zeigen.
+Die Skripte haben keine Windows-Signatur (Authenticode), Windows kann daher eine Warnung zeigen.
 
 ## Automatisch per Aufgabenplaner
 
@@ -61,6 +66,12 @@ Bitte unbedingt beachten:
 - Automatische Läufe fragen **nicht** vor dem Löschen nach.
 
 **English:** DirToy copies, overwrites and deletes files. Use at your own risk. Provided "as is" without warranty of any kind (see LICENSE). Always run the preview first and keep a backup.
+
+## Entwicklung
+
+Der Code liegt in `src\core` (Sync, ohne Oberfläche) und `src\gui`. `build.ps1` fügt alles zu `DirToy.ps1` zusammen, nur diese Datei wird ausgeliefert.
+Tests in `tests\`: `test-kern.ps1` und `test-update.ps1` laufen ohne Fenster, die Python-Tests bedienen das echte Fenster (dabei nicht tippen).
+Release: Version in `src\core\01-start.ps1` setzen, `build.ps1`, `tools\signieren.ps1`, `DirToy.ps1` und `DirToy.ps1.sig` committen, Tag `vX.Y.Z` pushen.
 
 ## Lizenz
 
