@@ -19,6 +19,17 @@ jobs:
         shell: pwsh
         run: ./build.ps1 -Check
 
+      - name: Version und Signatur muessen stimmen
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./src/core/15-signatur.ps1
+          . ./src/core/16-signierschluessel.ps1
+          $ver = $env:GITHUB_REF_NAME.TrimStart('v')
+          $bytes = [IO.File]::ReadAllBytes("$PWD/DirToy.ps1")
+          if ([Text.Encoding]::UTF8.GetString($bytes) -notmatch "script:version = '$([regex]::Escape($ver))'") { throw "DirToy.ps1 hat nicht die Version $ver" }
+          if (-not (Test-UpdateSignature $bytes (Get-Content -Raw ./DirToy.ps1.sig))) { throw 'DirToy.ps1.sig fehlt oder passt nicht (tools/signieren.ps1)' }
+
       - name: ZIP bauen
         run: |
           VER="${GITHUB_REF_NAME#v}"

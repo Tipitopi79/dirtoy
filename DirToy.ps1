@@ -764,11 +764,17 @@ function Install-Update($info, [string]$target, [string]$sourceUrl) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $wc = New-Object System.Net.WebClient
     $wc.Headers['User-Agent'] = 'DirToy'
-    try { $bytes = $wc.DownloadData($sourceUrl) } finally { $wc.Dispose() }
+    try {
+        $bytes = $wc.DownloadData($sourceUrl)
+        try { $sig = [System.Text.Encoding]::ASCII.GetString($wc.DownloadData($sourceUrl + '.sig')) }
+        catch { throw "Die Signatur des Updates konnte nicht geladen werden. $($_.Exception.Message)" }
+    } finally { $wc.Dispose() }
+    if ($bytes.Length -lt 50KB) { throw 'Die heruntergeladene Datei ist zu klein.' }
+    # Nichts wird gespeichert, bevor die Signatur mit dem eingebauten Schluessel stimmt
+    if (-not (Test-UpdateSignature $bytes $sig)) { throw 'Die Signatur des Updates ist ungültig. Die Datei stammt nicht vom Entwickler oder wurde verändert.' }
     $neu = $target + '.neu'
     [System.IO.File]::WriteAllBytes($neu, $bytes)
     try {
-        if ($bytes.Length -lt 50KB) { throw 'Die heruntergeladene Datei ist zu klein.' }
         $errs = $null; $toks = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile($neu, [ref]$toks, [ref]$errs)
         if ($errs -and $errs.Count -gt 0) { throw 'Die heruntergeladene Datei ist kein gültiges Skript.' }
@@ -799,6 +805,8 @@ function Test-UpdateSignature([byte[]]$data, [string]$sigB64) {
         return [bool]$rsa.VerifyData((Convert-ForSignature $data), $sig, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
     } catch { return $false } finally { $rsa.Dispose() }
 }
+# Oeffentlicher Schluessel zur Pruefung der Update-Signatur (erzeugt von tools\neuer-schluessel.ps1). Nicht von Hand aendern.
+$script:signingCert = 'MIIDxDCCAiygAwIBAgIIEaWk/PZiNH4wDQYJKoZIhvcNAQELBQAwITEfMB0GA1UEAxMWRGlyVG95IFVwZGF0ZS1TaWduYXR1cjAgFw0yNjExMjQwNDUzMzlaGA8yMDU2MTEyNTA0NTMzOVowITEfMB0GA1UEAxMWRGlyVG95IFVwZGF0ZS1TaWduYXR1cjCCAaIwDQYJKoZIhvcNAQEBBQADggGPADCCAYoCggGBAOJ4GlzyI1kO/oWdRrYKLmddzwTRSiU1jqcCdXMSCm66nMgRiel4ZQHvi2+iFJLo5qBgU4SV2nKGkSAQmPHGmw/+DAwg5WYkO93XWltSwPk7mqwHp6Jc61TOe1z9NO48vjccUuV0sQpZPfSL+QpuKARzcL93Ggu3TQRySHicKYpr8oZ5bbRZLE3Aw1xAiwT/GfKOOTGtbCiDx7hqG3APPl10wpMmMJFjRVDGm/i2WVR3c0mW9GJYYmpJqYg/p4s87WBuqA4f+7Y9N6/Qpt4xr91X3GQKD6cQ7pjboZ7JSQNkP7zd7i400zXTYlXMddqFJDRhOzIxXpcL39QgqLileSge0JCm9AuyMSNIFg4GfUcWYt1e0tblI4SSsvO66tHM7oiG+z2amhh0dogRw5aXRDu1BhXqhaNE4KcHOdVmu9R52sKo/zFl8YxMLBsErmdKXm28MtxhOHOT53kNoB2/Msgd5+3KhU/mMPSBxqrpobnnh6Rfh/nYnty1R6XkEVd00QIDAQABMA0GCSqGSIb3DQEBCwUAA4IBgQBgR6OAZdtqqeK/BO/Ywt/l1kDzmDlbdwHxilN5ggblKD4iKt+JMU3ajynHGxyELTU3gw0ZWrQJBsV+WpyZQQvAQV0FZW8nXZL3KHImYLfg1oehi3lLQU5Hd6h7sDG48mVJii9Z/t/4MLnCt2e6/90RD28+tW4EzEHu5nRcbrOZU0elTxHNd/aeRf4gJTbw+URapsfaSjJNeGKZPmtcaw82zbT49Spgy6RLMxyciYvS2nrMn40OJbaDu3QkDIvKLx7/w/1a0J8z7DbWMrWGt+G3HXxrqTH+v6KkpI60az4d+pLa8+7VXCs0czrM5XVBdfzW+4MUKbW/PQcyHj/zF3tRqOmXxanRWJXbIm57kCmqukJ7x6T+kWIjBiWoxW8EwtAuZiU+zUew//QB8nCQpKFQp/vlENbG9s1AK/yH+UY5IPM94LiN1SMBdkzn7xSMrpBxpDFeI50QHcFMHQGR/vKfiqylmSf+yCsU5yTtiiahlUsGZNP/r+pxRFT3sJBoIXU='
 if ($NoGui) { return }
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 # Kern-Funktionen merken (Name und Text): der Sync-Thread bekommt genau diese, nicht die Datei auf der Platte

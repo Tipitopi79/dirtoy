@@ -17,11 +17,17 @@ function Install-Update($info, [string]$target, [string]$sourceUrl) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $wc = New-Object System.Net.WebClient
     $wc.Headers['User-Agent'] = 'DirToy'
-    try { $bytes = $wc.DownloadData($sourceUrl) } finally { $wc.Dispose() }
+    try {
+        $bytes = $wc.DownloadData($sourceUrl)
+        try { $sig = [System.Text.Encoding]::ASCII.GetString($wc.DownloadData($sourceUrl + '.sig')) }
+        catch { throw "Die Signatur des Updates konnte nicht geladen werden. $($_.Exception.Message)" }
+    } finally { $wc.Dispose() }
+    if ($bytes.Length -lt 50KB) { throw 'Die heruntergeladene Datei ist zu klein.' }
+    # Nichts wird gespeichert, bevor die Signatur mit dem eingebauten Schluessel stimmt
+    if (-not (Test-UpdateSignature $bytes $sig)) { throw 'Die Signatur des Updates ist ungültig. Die Datei stammt nicht vom Entwickler oder wurde verändert.' }
     $neu = $target + '.neu'
     [System.IO.File]::WriteAllBytes($neu, $bytes)
     try {
-        if ($bytes.Length -lt 50KB) { throw 'Die heruntergeladene Datei ist zu klein.' }
         $errs = $null; $toks = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile($neu, [ref]$toks, [ref]$errs)
         if ($errs -and $errs.Count -gt 0) { throw 'Die heruntergeladene Datei ist kein gültiges Skript.' }

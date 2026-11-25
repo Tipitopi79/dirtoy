@@ -1,6 +1,6 @@
 # Fenstertest fuer den Lauf: Abbrechen, Schliessen, Rueckfragen, Vorschau, Fehler, Aenderungen waehrend des Laufs.
 # Ordner B woanders (z. B. auf einem NAS): Umgebungsvariable DIRTOY_TEST_B=<ordner>; dort wird nur ein eigener Unterordner benutzt.
-# Start: python tests/test-ablauf.py        braucht voruebergehend rund 3 GB im Temp-Ordner
+# Start: python tests/test-ablauf.py        braucht voruebergehend rund 3 GB im Temp-Ordner (bei gesperrtem PC 12 GB)
 import ctypes, json, os, shutil, subprocess, sys, tempfile, time
 from fenster import *
 ok = True
@@ -77,7 +77,7 @@ with Lauf() as l:
     l.zu(); l.p.wait(10)
 print('== Abbrechen mitten in einer grossen Datei')
 with Lauf() as l:
-    gross(os.path.join(l.A, 'gross.bin'), 1400); open(os.path.join(l.B, 'gross.bin'), 'w').write('original'); os.utime(os.path.join(l.B, 'gross.bin'), (1600000000,) * 2)
+    gross(os.path.join(l.A, 'gross.bin'), 6000 if gesperrt() else 1400); open(os.path.join(l.B, 'gross.bin'), 'w').write('original'); os.utime(os.path.join(l.B, 'gross.bin'), (1600000000,) * 2)
     l.start(); l.klick('Synchronisieren'); bis(lambda: l.tmp(), 30, 'Zwischendatei'); l.klick('Abbrechen'); t = l.status('Abgebrochen.', 20)
     check(f'nach {t:.1f} s, Original unveraendert', open(os.path.join(l.B, 'gross.bin'), 'rb').read(20) == b'original'); check('keine Zwischendateien', not l.tmp())
     l.zu(); l.p.wait(10)

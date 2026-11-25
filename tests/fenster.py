@@ -11,6 +11,11 @@ u.PrintWindow.argtypes = [W.HWND, ctypes.c_void_p, W.UINT]
 out = sys.argv[2] if len(sys.argv) > 2 and sys.argv[1] == '--bilder' else None
 PS1 = os.environ.get('DIRTOY_TEST_PS1') or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'DirToy.ps1')
 VER = re.search(r"script:version = '([\d.]+)'", open(PS1, encoding='utf-8-sig').read()).group(1)
+# PC gesperrt: ferngesteuerte Klicks brauchen dann rund 2 s (das Programm selbst reagiert normal)
+def gesperrt():
+    u.OpenInputDesktop.restype = ctypes.c_void_p; h = u.OpenInputDesktop(0, False, 0x100)
+    if h: u.CloseDesktop(ctypes.c_void_p(h))
+    return not h
 def text(h):
     b = ctypes.create_unicode_buffer(300); u.GetWindowTextW(h, b, 300); return b.value
 def tops(pid):
