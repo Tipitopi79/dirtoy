@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '2.0.1'
+$script:version = '2.0.2'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -1257,12 +1257,15 @@ $script:xaml = @'
     <Grid Grid.Column="1" Margin="24,18,24,16">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
       <DockPanel>
-        <Button x:Name="btnGear" DockPanel.Dock="Right" Style="{StaticResource Ghost}" ToolTip="Einstellungen der Aufgabe: Ausschlüsse, Ordnerauswahl, Löschen" AutomationProperties.Name="Einstellungen der Aufgabe"><TextBlock Text="&#xE713;" Style="{StaticResource Icon}" FontSize="18"/></Button>
+        <Button x:Name="btnGear" DockPanel.Dock="Right" Style="{StaticResource Ghost}" ToolTip="Einstellungen der Aufgabe: Modus, Ausschlüsse, Ordnerauswahl, Löschen" AutomationProperties.Name="Einstellungen der Aufgabe"><TextBlock Text="&#xE713;" Style="{StaticResource Icon}" FontSize="18"/></Button>
         <Button x:Name="btnSched" AutomationProperties.Name="Zeitplan" DockPanel.Dock="Right" Style="{StaticResource Ghost}" ToolTip="Automatische Ausführung einrichten"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE823;" Style="{StaticResource Icon}" Margin="0,0,8,0"/><TextBlock x:Name="lblSched" MaxWidth="360" TextTrimming="CharacterEllipsis"/></StackPanel></Button>
         <TextBox x:Name="tbName" FontSize="22" FontWeight="SemiBold" Height="42" Background="Transparent" BorderBrush="Transparent" Padding="4,0" Margin="-5,0,8,0" AutomationProperties.Name="Name der Aufgabe" ToolTip="Name der Aufgabe (anklicken zum Ändern)"/>
       </DockPanel>
       <Border x:Name="gear" Grid.Row="1" Visibility="Collapsed" Background="{DynamicResource Surface}" CornerRadius="12" Padding="16" Margin="0,12,0,0">
         <StackPanel>
+          <StackPanel x:Name="gearMode" Visibility="Collapsed" Margin="0,0,0,16">
+            <TextBlock x:Name="lblGearMode" Text="Modus: legt fest, was ein Lauf tut. Nach dem ersten Lauf nur noch hier änderbar." Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,6"/>
+          </StackPanel>
           <TextBlock Text="Nicht synchronisieren: Dateinamen oder Muster, mit ; getrennt (z. B. Thumbs.db;*.tmp;~$*;node_modules)" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,6"/>
           <DockPanel><Button x:Name="btnDel" DockPanel.Dock="Right" Margin="8,0,0,0" Height="34" Foreground="{DynamicResource Err}" ToolTip="Aufgabe löschen (Dateien bleiben unverändert)">Aufgabe löschen</Button>
             <Button x:Name="btnDirs" DockPanel.Dock="Right" Margin="8,0,0,0" Height="34" ToolTip="Ordner abwählen, die nicht synchronisiert werden sollen"/>
@@ -1297,8 +1300,8 @@ $script:xaml = @'
           </StackPanel>
         </Border>
       </Grid>
-      <DockPanel Grid.Row="3" Margin="0,14,0,0" LastChildFill="False">
-        <Border Background="{DynamicResource Surface}" CornerRadius="8" VerticalAlignment="Center"><StackPanel Orientation="Horizontal">
+      <DockPanel x:Name="bar" Grid.Row="3" Margin="0,14,0,0" LastChildFill="False">
+        <Border x:Name="modeBox" Background="{DynamicResource Surface}" CornerRadius="8" VerticalAlignment="Center" HorizontalAlignment="Left"><StackPanel Orientation="Horizontal">
           <RadioButton x:Name="m0" Style="{StaticResource Seg}" GroupName="m">Synchronisieren</RadioButton><RadioButton x:Name="m1" Style="{StaticResource Seg}" GroupName="m">Echo</RadioButton><RadioButton x:Name="m2" Style="{StaticResource Seg}" GroupName="m">Beitragen</RadioButton></StackPanel></Border>
         <Button x:Name="btnAll" DockPanel.Dock="Right" ToolTip="Alle Aufgaben nacheinander ausführen">Alle ausführen</Button>
         <Button x:Name="btnRun" AutomationProperties.Name="Starten" DockPanel.Dock="Right" Style="{StaticResource Primary}" Margin="8,0" MinWidth="120" ToolTip="Diese Aufgabe jetzt ausführen"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE768;" Style="{StaticResource Icon}" FontSize="13" Margin="0,0,8,0"/><TextBlock Text="Starten"/></StackPanel></Button>
@@ -1777,7 +1780,7 @@ function Show-Help {
     HelpH 'So geht es'
     HelpB '1.' 'Links auf "Neue Aufgabe" klicken und der Aufgabe einen Namen geben.'
     HelpB '2.' 'Ordner A und Ordner B wählen (Knopf "..." neben dem Pfad).'
-    HelpB '3.' 'Modus wählen (siehe unten).'
+    HelpB '3.' 'Modus wählen (siehe unten). Nach dem ersten Lauf liegt die Moduswahl hinter dem Zahnrad, damit sie nicht aus Versehen umgestellt wird.'
     HelpB '4.' '"Vorschau" zeigt, was passieren würde, ohne etwas zu verändern.'
     HelpB '5.' '"Starten" führt es aus. Zwischen den Ordnern siehst du die Richtung, der Balken zeigt den Fortschritt, die Liste das Ergebnis.'
     HelpH 'Die drei Modi'
@@ -2129,7 +2132,21 @@ function Refresh-List([int]$select) {
     $script:loading = $false
     Show-Cur
 }
-function Show-Mode([int]$m) { $ui.lblMode.Text = $script:modeHelp[$m]; Show-Direction $m }
+$script:modeNames = @('Synchronisieren', 'Echo', 'Beitragen')
+# Nach dem ersten Lauf (es gibt einen Stand) wandert die Moduswahl hinters Zahnrad: kein versehentliches Umschalten.
+function Test-HasRun($t) { return [bool]($t -and $t.Id -and ((Test-Path -LiteralPath (Join-Path $script:stateDir "$($t.Id).state")) -or (Test-Path -LiteralPath (Join-Path $script:stateDir "$($t.Id).json")))) }
+function Place-ModeBox([bool]$inGear) {
+    $box = $ui.modeBox; $to = $(if ($inGear) { $ui.gearMode } else { $ui.bar })
+    if ($box.Parent -ne $to) {
+        $box.Parent.Children.Remove($box)
+        if ($inGear) { [void]$to.Children.Add($box) } else { $to.Children.Insert(0, $box) }
+    }
+    $ui.gearMode.Visibility = $(if ($inGear) { 'Visible' } else { 'Collapsed' })
+}
+function Show-Mode([int]$m) {
+    $ui.lblMode.Text = $(if ($ui.modeBox.Parent -eq $ui.gearMode) { "$($script:modeNames[$m]): $($script:modeHelp[$m])" } else { $script:modeHelp[$m] })
+    Show-Direction $m
+}
 function Show-Cur {
     $i = $ui.lb.SelectedIndex
     $script:loading = $true
@@ -2137,9 +2154,11 @@ function Show-Cur {
         $script:cur = $script:tasks[$i]
         $ui.tbName.Text = [string]$script:cur.Name; $ui.tbA.Text = [string]$script:cur.A; $ui.tbB.Text = [string]$script:cur.B; $ui.tbEx.Text = [string]$script:cur.Exclude
         $mi = [int]$script:cur.Mode; if ($mi -lt 0 -or $mi -gt 2) { $mi = 0 }
+        Place-ModeBox (Test-HasRun $script:cur)
         $ui["m$mi"].IsChecked = $true; Show-Mode $mi
     } else {
         $script:cur = $null
+        Place-ModeBox $false
         $ui.tbName.Text = ''; $ui.tbA.Text = ''; $ui.tbB.Text = ''; $ui.tbEx.Text = ''; $ui.lblMode.Text = ''
         foreach ($k in 'm0', 'm1', 'm2') { $ui[$k].IsChecked = $false }
     }

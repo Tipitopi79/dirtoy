@@ -46,7 +46,21 @@ function Refresh-List([int]$select) {
     $script:loading = $false
     Show-Cur
 }
-function Show-Mode([int]$m) { $ui.lblMode.Text = $script:modeHelp[$m]; Show-Direction $m }
+$script:modeNames = @('Synchronisieren', 'Echo', 'Beitragen')
+# Nach dem ersten Lauf (es gibt einen Stand) wandert die Moduswahl hinters Zahnrad: kein versehentliches Umschalten.
+function Test-HasRun($t) { return [bool]($t -and $t.Id -and ((Test-Path -LiteralPath (Join-Path $script:stateDir "$($t.Id).state")) -or (Test-Path -LiteralPath (Join-Path $script:stateDir "$($t.Id).json")))) }
+function Place-ModeBox([bool]$inGear) {
+    $box = $ui.modeBox; $to = $(if ($inGear) { $ui.gearMode } else { $ui.bar })
+    if ($box.Parent -ne $to) {
+        $box.Parent.Children.Remove($box)
+        if ($inGear) { [void]$to.Children.Add($box) } else { $to.Children.Insert(0, $box) }
+    }
+    $ui.gearMode.Visibility = $(if ($inGear) { 'Visible' } else { 'Collapsed' })
+}
+function Show-Mode([int]$m) {
+    $ui.lblMode.Text = $(if ($ui.modeBox.Parent -eq $ui.gearMode) { "$($script:modeNames[$m]): $($script:modeHelp[$m])" } else { $script:modeHelp[$m] })
+    Show-Direction $m
+}
 function Show-Cur {
     $i = $ui.lb.SelectedIndex
     $script:loading = $true
@@ -54,9 +68,11 @@ function Show-Cur {
         $script:cur = $script:tasks[$i]
         $ui.tbName.Text = [string]$script:cur.Name; $ui.tbA.Text = [string]$script:cur.A; $ui.tbB.Text = [string]$script:cur.B; $ui.tbEx.Text = [string]$script:cur.Exclude
         $mi = [int]$script:cur.Mode; if ($mi -lt 0 -or $mi -gt 2) { $mi = 0 }
+        Place-ModeBox (Test-HasRun $script:cur)
         $ui["m$mi"].IsChecked = $true; Show-Mode $mi
     } else {
         $script:cur = $null
+        Place-ModeBox $false
         $ui.tbName.Text = ''; $ui.tbA.Text = ''; $ui.tbB.Text = ''; $ui.tbEx.Text = ''; $ui.lblMode.Text = ''
         foreach ($k in 'm0', 'm1', 'm2') { $ui[$k].IsChecked = $false }
     }

@@ -24,7 +24,7 @@ function Show-Help {
     HelpH 'So geht es'
     HelpB '1.' 'Links auf "Neue Aufgabe" klicken und der Aufgabe einen Namen geben.'
     HelpB '2.' 'Ordner A und Ordner B wählen (Knopf "..." neben dem Pfad).'
-    HelpB '3.' 'Modus wählen (siehe unten).'
+    HelpB '3.' 'Modus wählen (siehe unten). Nach dem ersten Lauf liegt die Moduswahl hinter dem Zahnrad, damit sie nicht aus Versehen umgestellt wird.'
     HelpB '4.' '"Vorschau" zeigt, was passieren würde, ohne etwas zu verändern.'
     HelpB '5.' '"Starten" führt es aus. Zwischen den Ordnern siehst du die Richtung, der Balken zeigt den Fortschritt, die Liste das Ergebnis.'
     HelpH 'Die drei Modi'

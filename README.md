@@ -3,7 +3,7 @@
 Grafisches Tool für Windows, das zwei Ordner synchron hält – inspiriert von SyncToy.
 Geschrieben in PowerShell (WPF), ohne Installation lauffähig.
 
-![Version](https://img.shields.io/badge/version-2.0.1-blue) ![Lizenz](https://img.shields.io/badge/lizenz-MIT-green)
+![Version](https://img.shields.io/badge/version-2.0.2-blue) ![Lizenz](https://img.shields.io/badge/lizenz-MIT-green)
 
 | Dunkel | Hell |
 |---|---|
@@ -12,7 +12,7 @@ Geschrieben in PowerShell (WPF), ohne Installation lauffähig.
 ## Funktionen
 
 - Beliebig viele **Sync-Aufgaben** mit je zwei Ordnern (A und B)
-- **Drei Modi**: Synchronisieren (beidseitig), Echo (A → B, B wird wie A), Beitragen (A → B, ohne Löschen)
+- **Drei Modi**: Synchronisieren (beidseitig), Echo (A → B, B wird wie A), Beitragen (A → B, ohne Löschen). Nach dem ersten Lauf liegt die Moduswahl hinter dem Zahnrad, damit sie nicht aus Versehen umgestellt wird
 - **Ordner 1:1 identisch**: alle Unterordner werden rekursiv gespiegelt, auch leere; angelegt und (außer im Modus *Beitragen*) auch gelöscht
 - **Sicheres Kopieren**: Dateien werden erst als Zwischendatei (`.dirtoy-tmp`) geschrieben und am Ende umbenannt – bei Abbruch oder Absturz bleibt das Original im Ziel unverändert. Mit **Abbrechen** stoppt ein Lauf nach der aktuellen Datei, auch beim Schließen des Fensters.
 - **Ordnerbaum zum Abwählen**: beide Ordner nebeneinander als Baum, Haken entfernen = Ordner samt Unterordnern wird nicht synchronisiert. Neue Ordner sind standardmäßig dabei, gespeichert werden nur die abgewählten
