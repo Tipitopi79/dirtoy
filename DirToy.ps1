@@ -22,7 +22,7 @@ trap {
     }
     exit 1
 }
-$script:version = '2.0.0'
+$script:version = '2.0.1'
 $script:bulk = $false
 $script:tmpSuffix = '.dirtoy-tmp'
 $script:pumpMs = 150
@@ -363,8 +363,39 @@ function Copy-One($src, $dst) {
         if (-not $ok) { try { if (Test-Path -LiteralPath $tmp) { [System.IO.File]::Delete($tmp) } } catch { } }
     }
 }
-function Delete-One($path) {
-    [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($path, 'OnlyErrorDialogs', 'SendToRecycleBin')
+# In den Papierkorb (wo es keinen gibt, z. B. Netzlaufwerk: endgueltig). Nie ein Windows-Fenster: ein Fehlerfenster
+# wuerde den Lauf anhalten, bis jemand klickt (bei Zeitplaenen unbemerkt). Fehler werden zur Ausnahme -> Protokoll.
+# Alles steht in der Funktion: der Sync-Thread bekommt nur Funktionen mit, keine Skript-Variablen.
+function Delete-One($path, [int]$flags = 0x0654) {   # FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR | FOF_NOERRORUI
+    if (-not ('DirToyShell.Papierkorb' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+namespace DirToyShell {
+    public static class Papierkorb {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct Op64 { public IntPtr hwnd; public uint wFunc; public string pFrom; public string pTo; public ushort fFlags; public int fAborted; public IntPtr hMaps; public string title; }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode, Pack = 1)]
+        struct Op32 { public IntPtr hwnd; public uint wFunc; public string pFrom; public string pTo; public ushort fFlags; public int fAborted; public IntPtr hMaps; public string title; }
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SHFileOperationW(ref Op64 op);
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SHFileOperationW(ref Op32 op);
+        // Rueckgabe: Fehlercode (0 = ok), aborted: Windows hat abgebrochen
+        public static int Delete(string path, int flags, out bool aborted) {
+            int r;
+            if (IntPtr.Size == 8) { var o = new Op64(); o.wFunc = 3; o.pFrom = path + "\0\0"; o.fFlags = (ushort)flags; r = SHFileOperationW(ref o); aborted = o.fAborted != 0; }
+            else { var o = new Op32(); o.wFunc = 3; o.pFrom = path + "\0\0"; o.fFlags = (ushort)flags; r = SHFileOperationW(ref o); aborted = o.fAborted != 0; }
+            return r;
+        }
+    }
+}
+'@
+    }
+    $aborted = $false
+    $r = [DirToyShell.Papierkorb]::Delete([System.IO.Path]::GetFullPath($path), $flags, [ref]$aborted)
+    if ($r -ne 0) {
+        $m = if ($r -lt 0x71 -or $r -gt 0x10000) { (New-Object System.ComponentModel.Win32Exception($r)).Message } else { 'Windows konnte die Datei nicht löschen' }
+        throw ('{0} (Code 0x{1:X})' -f $m, $r)
+    }
+    if ($aborted) { throw 'Windows hat das Löschen abgebrochen' }
 }
 # Neuer Zustand aus dem Ergebnis des Laufs (kein erneutes Einlesen: ein anderer PC, der waehrenddessen
 # im selben Ordner loescht, wuerde sonst die Liste verfaelschen und Geloeschtes kaeme zurueck).

@@ -3,7 +3,7 @@
 Grafisches Tool für Windows, das zwei Ordner synchron hält – inspiriert von SyncToy.
 Geschrieben in PowerShell (WPF), ohne Installation lauffähig.
 
-![Version](https://img.shields.io/badge/version-2.0.0-blue) ![Lizenz](https://img.shields.io/badge/lizenz-MIT-green)
+![Version](https://img.shields.io/badge/version-2.0.1-blue) ![Lizenz](https://img.shields.io/badge/lizenz-MIT-green)
 
 | Dunkel | Hell |
 |---|---|
@@ -64,13 +64,14 @@ Bitte unbedingt beachten:
 - **Eine Datensicherung** der betroffenen Ordner anlegen, bevor eine neue Aufgabe zum ersten Mal läuft.
 - Gelöscht wird in den **Papierkorb**, bei Netzlaufwerken ohne Papierkorb aber **endgültig**.
 - Automatische Läufe fragen **nicht** vor dem Löschen nach.
+- Lässt sich eine Datei nicht löschen (z. B. in Benutzung, Laufwerk nicht erreichbar), läuft DirToy ohne Rückfrage weiter, meldet den Fehler im Protokoll und versucht es beim nächsten Lauf erneut.
 
 **English:** DirToy copies, overwrites and deletes files. Use at your own risk. Provided "as is" without warranty of any kind (see LICENSE). Always run the preview first and keep a backup.
 
 ## Entwicklung
 
 Der Code liegt in `src\core` (Sync, ohne Oberfläche) und `src\gui`. `build.ps1` fügt alles zu `DirToy.ps1` zusammen, nur diese Datei wird ausgeliefert.
-Tests in `tests\`: `test-kern.ps1` und `test-update.ps1` laufen ohne Fenster, die Python-Tests bedienen das echte Fenster (dabei nicht tippen).
+Tests in `tests\`: `test-kern.ps1`, `test-update.ps1` und `test-loeschen.ps1` laufen ohne Fenster, die Python-Tests bedienen das echte Fenster (dabei nicht tippen).
 Release: Version in `src\core\01-start.ps1` setzen, `build.ps1`, `tools\signieren.ps1`, `DirToy.ps1` und `DirToy.ps1.sig` committen, Tag `vX.Y.Z` pushen.
 
 ## Lizenz
